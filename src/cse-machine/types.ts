@@ -17,6 +17,7 @@ export enum InstrType {
   BRANCH = 'Branch',
   ENVIRONMENT = 'Environment',
   ARRAY_LITERAL = 'ArrayLiteral',
+  OBJECT_LITERAL = 'ObjectLiteral',
   ARRAY_ACCESS = 'ArrayAccess',
   ARRAY_ASSIGNMENT = 'ArrayAssignment',
   ARRAY_LENGTH = 'ArrayLength',
@@ -25,7 +26,14 @@ export enum InstrType {
   CONTINUE_MARKER = 'ContinueMarker',
   BREAK = 'Break',
   BREAK_MARKER = 'BreakMarker',
-  SPREAD = 'Spread'
+  SPREAD = 'Spread',
+  // Delimited continuation instructions
+  RESET_CONTROL_MARKER = 'ResetControlMarker',
+  ENV_STACK_RESTORE = 'EnvStackRestore',
+  // Effect handler instructions
+  HANDLER_CONTROL_MARKER = 'HandlerControlMarker',
+  RUN_WITH_HANDLER = 'RunWithHandler',
+  PERFORM = 'Perform'
 }
 
 interface BaseInstr {
@@ -79,8 +87,59 @@ export interface ArrLitInstr extends BaseInstr {
   arity: number
 }
 
+export interface ObjLitInstr extends BaseInstr {
+  keys: string[]
+}
+
 export interface SpreadInstr extends BaseInstr {
   symbol: es.SpreadElement
+}
+
+// Delimited continuation marker instruction
+export interface ResetControlMarkerInstr extends BaseInstr {
+  instrType: InstrType.RESET_CONTROL_MARKER
+}
+
+// Environment stack restore instruction for delimited continuation
+export interface EnvStackRestoreInstr extends BaseInstr {
+  instrType: InstrType.ENV_STACK_RESTORE
+  envStack: Environment[]
+  transformers: Transformers
+}
+
+// Effect handler instructions
+export interface HandlerControlMarkerInstr extends BaseInstr {
+  instrType: InstrType.HANDLER_CONTROL_MARKER
+  handler: Handler
+  id: number
+}
+
+export interface RunWithHandlerInstr extends BaseInstr {
+  instrType: InstrType.RUN_WITH_HANDLER
+  body: es.BlockStatement
+}
+
+export interface PerformInstr extends BaseInstr {
+  instrType: InstrType.PERFORM
+  op: string
+  arity: number
+}
+
+// Handler type - maps operation names to handler functions
+export type Handler = Map<string, any>
+
+// Special marker values for the stash
+export class ResetStashMarker {
+  public toString(): string {
+    return 'reset_stash_marker'
+  }
+}
+
+export class HandlerStashMarker {
+  constructor(public readonly id: number) {}
+  public toString(): string {
+    return `handler_stash_marker(${this.id})`
+  }
 }
 
 export type Instr =
@@ -91,7 +150,13 @@ export type Instr =
   | BranchInstr
   | EnvInstr
   | ArrLitInstr
+  | ObjLitInstr
   | SpreadInstr
+  | ResetControlMarkerInstr
+  | EnvStackRestoreInstr
+  | HandlerControlMarkerInstr
+  | RunWithHandlerInstr
+  | PerformInstr
 
 export type ControlItem = (Node | Instr | SchemeControlItems) & {
   isEnvDependent?: boolean

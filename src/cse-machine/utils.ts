@@ -22,7 +22,7 @@ import {
   ForInstr
 } from './types'
 import Closure from './closure'
-import { Continuation, isCallWithCurrentContinuation } from './continuations'
+import { Continuation, DelimitedContinuation, isCallWithCurrentContinuation, isShift, isReset, isWithHandle, isPerform } from './continuations'
 import { isApply, isEval } from './scheme-macros'
 
 /**
@@ -376,6 +376,52 @@ export const createProgramEnvironment = (context: Context, isPrelude: boolean): 
 }
 
 /**
+ * Creates a fresh copy of an environment stack for multi-shot continuation support.
+ * This copies the head bindings of each environment so that variable declarations
+ * during one continuation invocation don't affect subsequent invocations.
+ * Stops copying at global/program/prelude environments (they are shared).
+ */
+export const copyEnvironmentStack = (envStack: Environment[]): Environment[] => {
+  const result: Environment[] = []
+  const idMap = new Map<string, Environment>()
+
+  for (const env of envStack) {
+    // Stop copying at global/program/prelude - these are shared
+    if (env.name === 'global' || env.name === 'programEnvironment' || env.name === 'prelude') {
+      result.push(env)
+      continue
+    }
+
+    // Check if we've already copied this environment
+    if (idMap.has(env.id)) {
+      result.push(idMap.get(env.id)!)
+      continue
+    }
+
+    // Create the copy - preserve ID for ENV instruction compatibility
+    const copy: Environment = {
+      name: env.name,
+      tail: env.tail, // Will update tail references below
+      head: { ...env.head },
+      heap: new Heap(),
+      id: env.id
+    }
+
+    idMap.set(env.id, copy)
+    result.push(copy)
+  }
+
+  // Update tail references to point to copied environments where applicable
+  for (const copy of result) {
+    if (copy.tail && idMap.has(copy.tail.id)) {
+      copy.tail = idMap.get(copy.tail.id)!
+    }
+  }
+
+  return result
+}
+
+/**
  * Variables
  */
 
@@ -595,6 +641,42 @@ export const checkNumberOfArguments = (
     // and so we can let it pass
     // TODO: in future, if we can somehow check the number of arguments
     // expected by the continuation, we can add a check here.
+    return undefined
+  } else if (isShift(callee) || isReset(callee)) {
+    // shift and reset should have a single argument (a thunk)
+    if (args.length !== 1) {
+      return handleRuntimeError(
+        context,
+        new errors.InvalidNumberOfArguments(exp, 1, args.length, false)
+      )
+    }
+    return undefined
+  } else if (isWithHandle(callee)) {
+    // withHandle should have exactly 2 arguments (handler, body)
+    if (args.length !== 2) {
+      return handleRuntimeError(
+        context,
+        new errors.InvalidNumberOfArguments(exp, 2, args.length, false)
+      )
+    }
+    return undefined
+  } else if (isPerform(callee)) {
+    // perform should have at least 1 argument (the operation name)
+    if (args.length < 1) {
+      return handleRuntimeError(
+        context,
+        new errors.InvalidNumberOfArguments(exp, 1, args.length, true)
+      )
+    }
+    return undefined
+  } else if (callee instanceof DelimitedContinuation) {
+    // Delimited continuations expect a single argument
+    if (args.length !== 1) {
+      return handleRuntimeError(
+        context,
+        new errors.InvalidNumberOfArguments(exp, 1, args.length, false)
+      )
+    }
     return undefined
   } else {
     // Pre-built functions

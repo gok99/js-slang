@@ -12,9 +12,16 @@ import {
   BinOpInstr,
   BranchInstr,
   EnvInstr,
+  EnvStackRestoreInstr,
   ForInstr,
+  Handler,
+  HandlerControlMarkerInstr,
   Instr,
   InstrType,
+  ObjLitInstr,
+  PerformInstr,
+  ResetControlMarkerInstr,
+  RunWithHandlerInstr,
   UnOpInstr,
   WhileInstr
 } from './types'
@@ -108,6 +115,12 @@ export const arrLitInstr = (arity: number, srcNode: Node): ArrLitInstr => ({
   srcNode
 })
 
+export const objLitInstr = (keys: string[], srcNode: Node): ObjLitInstr => ({
+  instrType: InstrType.OBJECT_LITERAL,
+  keys,
+  srcNode
+})
+
 export const arrAccInstr = (srcNode: Node): Instr => ({
   instrType: InstrType.ARRAY_ACCESS,
   srcNode
@@ -145,5 +158,50 @@ export const breakMarkerInstr = (srcNode: Node): Instr => ({
 
 export const spreadInstr = (srcNode: Node): Instr => ({
   instrType: InstrType.SPREAD,
+  srcNode
+})
+
+// Delimited continuation instruction creators
+export const resetControlMarkerInstr = (srcNode: Node): ResetControlMarkerInstr => ({
+  instrType: InstrType.RESET_CONTROL_MARKER,
+  srcNode
+})
+
+// Effect handler instruction creators
+export const handlerControlMarkerInstr = (
+  handler: Handler,
+  id: number,
+  srcNode: Node
+): HandlerControlMarkerInstr => ({
+  instrType: InstrType.HANDLER_CONTROL_MARKER,
+  handler,
+  id,
+  srcNode
+})
+
+export const runWithHandlerInstr = (
+  body: es.BlockStatement,
+  srcNode: Node
+): RunWithHandlerInstr => ({
+  instrType: InstrType.RUN_WITH_HANDLER,
+  body,
+  srcNode
+})
+
+export const performInstr = (op: string, arity: number, srcNode: Node): PerformInstr => ({
+  instrType: InstrType.PERFORM,
+  op,
+  arity,
+  srcNode
+})
+
+export const envStackRestoreInstr = (
+  envStack: Environment[],
+  transformers: Transformers,
+  srcNode: Node
+): EnvStackRestoreInstr => ({
+  instrType: InstrType.ENV_STACK_RESTORE,
+  envStack,
+  transformers,
   srcNode
 })

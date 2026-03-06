@@ -2,6 +2,7 @@ import * as es from 'estree'
 
 import { Context, Environment } from '../types'
 import { Control, Stash, Transformers } from './interpreter'
+import { ControlItem, Handler } from './types'
 import { uniqueId } from './utils'
 
 /**
@@ -140,4 +141,183 @@ export function makeDummyContCallExpression(callee: string, argument: string): e
       }
     ]
   }
+}
+
+/**
+ * A dummy function used to detect for the shift function object.
+ * If the interpreter sees this specific function, a delimited continuation
+ * up to the nearest reset marker is captured.
+ */
+export class Shift extends Function {
+  private static instance: Shift = new Shift()
+
+  private constructor() {
+    super()
+  }
+
+  public static get(): Shift {
+    return Shift.instance
+  }
+
+  public toString(): string {
+    return 'shift'
+  }
+}
+
+export const shift = Shift.get()
+
+export function isShift(value: any): boolean {
+  return value === shift
+}
+
+/**
+ * A dummy function used to detect for the reset function object.
+ * If the interpreter sees this specific function, it places delimiter
+ * markers on the control and stash.
+ */
+export class Reset extends Function {
+  private static instance: Reset = new Reset()
+
+  private constructor() {
+    super()
+  }
+
+  public static get(): Reset {
+    return Reset.instance
+  }
+
+  public toString(): string {
+    return 'reset'
+  }
+}
+
+export const reset = Reset.get()
+
+export function isReset(value: any): boolean {
+  return value === reset
+}
+
+/**
+ * A delimited continuation object that captures a portion of the
+ * control stack, stash, and environment up to a delimiter marker.
+ *
+ * Unlike full continuations (from call/cc), delimited continuations:
+ * - Only capture up to the nearest reset/handler marker
+ * - When applied, append to the current state rather than replacing it
+ * - Can be invoked multiple times (multi-shot)
+ */
+export class DelimitedContinuation extends Function {
+  /** Captured control items up to the delimiter */
+  private control: ControlItem[]
+  /** Captured stash values up to the delimiter */
+  private stash: any[]
+  /** Environment stack at the point of capture (full call stack, not just lexical chain) */
+  private envStack: Environment[]
+  /** Transformers at the point of capture */
+  private transformers: Transformers
+
+  /** Unique ID for this continuation */
+  public readonly id: string
+
+  /** Optional handler for effect handler continuations */
+  public readonly handler?: Handler
+  public readonly handlerId?: number
+
+  constructor(
+    context: Context,
+    control: ControlItem[],
+    stash: any[],
+    envStack: Environment[],
+    transformers: Transformers,
+    handler?: Handler,
+    handlerId?: number
+  ) {
+    super()
+    // Store copies of the captured state
+    this.control = [...control]
+    this.stash = [...stash]
+    this.envStack = [...envStack]
+    this.transformers = transformers
+    this.id = uniqueId(context)
+    this.handler = handler
+    this.handlerId = handlerId
+  }
+
+  public getControl(): ControlItem[] {
+    return [...this.control]
+  }
+
+  public getStash(): any[] {
+    return [...this.stash]
+  }
+
+  public getEnvStack(): Environment[] {
+    return [...this.envStack]
+  }
+
+  public getTransformers(): Transformers {
+    return this.transformers
+  }
+
+  public toString(): string {
+    return 'delimited_continuation'
+  }
+
+  public equals(other: DelimitedContinuation): boolean {
+    return this === other
+  }
+}
+
+/**
+ * A dummy function used to detect for the withHandle function object.
+ * If the interpreter sees this specific function, it places handler
+ * markers on the control and stash and executes the body.
+ */
+export class WithHandle extends Function {
+  private static instance: WithHandle = new WithHandle()
+
+  private constructor() {
+    super()
+  }
+
+  public static get(): WithHandle {
+    return WithHandle.instance
+  }
+
+  public toString(): string {
+    return 'withHandle'
+  }
+}
+
+export const withHandle = WithHandle.get()
+
+export function isWithHandle(value: any): boolean {
+  return value === withHandle
+}
+
+/**
+ * A dummy function used to detect for the perform function object.
+ * If the interpreter sees this specific function, it captures a delimited
+ * continuation up to the nearest handler that handles the operation.
+ */
+export class Perform extends Function {
+  private static instance: Perform = new Perform()
+
+  private constructor() {
+    super()
+  }
+
+  public static get(): Perform {
+    return Perform.instance
+  }
+
+  public toString(): string {
+    return 'perform'
+  }
+}
+
+export const perform = Perform.get()
+
+export function isPerform(value: any): boolean {
+  return value === perform
 }

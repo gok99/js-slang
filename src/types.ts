@@ -77,7 +77,8 @@ export enum Chapter {
   FULL_SCHEME = -13,
   FULL_C = -14,
   FULL_JAVA = -15,
-  LIBRARY_PARSER = 100
+  LIBRARY_PARSER = 100,
+  DELIM_CONT = -16
 }
 
 export enum Variant {

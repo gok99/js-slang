@@ -37,7 +37,8 @@ export const sourceLanguages: Language[] = [
   { chapter: Chapter.SOURCE_3, variant: Variant.TYPED },
   { chapter: Chapter.SOURCE_4, variant: Variant.DEFAULT },
   { chapter: Chapter.SOURCE_4, variant: Variant.TYPED },
-  { chapter: Chapter.SOURCE_4, variant: Variant.EXPLICIT_CONTROL }
+  { chapter: Chapter.SOURCE_4, variant: Variant.EXPLICIT_CONTROL },
+  { chapter: Chapter.DELIM_CONT, variant: Variant.EXPLICIT_CONTROL }
 ]
 
 export const scmLanguages: Language[] = [

@@ -8,6 +8,7 @@ import { PythonParser } from './python'
 import { SchemeParser } from './scheme'
 import { SourceParser } from './source'
 import { SourceTypedParser } from './source/typed'
+import { S4SParser } from './s4s'
 import type { AcornOptions, Parser } from './types'
 
 export function parse<TOptions extends AcornOptions>(
@@ -33,6 +34,9 @@ export function parse<TOptions extends AcornOptions>(
       break
     case Chapter.FULL_TS:
       parser = new FullTSParser()
+      break
+    case Chapter.DELIM_CONT:
+      parser = new S4SParser(context.chapter, context.variant)
       break
     default:
       switch (context.variant) {

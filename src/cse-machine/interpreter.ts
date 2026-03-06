@@ -25,7 +25,12 @@ import { isSchemeLanguage } from '../alt-langs/mapper'
 import Closure from './closure'
 import {
   Continuation,
+  DelimitedContinuation,
   isCallWithCurrentContinuation,
+  isReset,
+  isShift,
+  isWithHandle,
+  isPerform,
   makeDummyContCallExpression
 } from './continuations'
 import * as instr from './instrCreator'
@@ -40,9 +45,15 @@ import {
   ControlItem,
   CseError,
   EnvInstr,
+  EnvStackRestoreInstr,
   ForInstr,
+  Handler,
+  HandlerControlMarkerInstr,
+  HandlerStashMarker,
   Instr,
   InstrType,
+  ObjLitInstr,
+  ResetStashMarker,
   UnOpInstr,
   WhileInstr,
   SpreadInstr
@@ -50,6 +61,7 @@ import {
 import {
   checkNumberOfArguments,
   checkStackOverFlow,
+  copyEnvironmentStack,
   createBlockEnvironment,
   createEnvironment,
   createProgramEnvironment,
@@ -757,6 +769,25 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
+  ObjectExpression: function (command: es.ObjectExpression, context: Context, control: Control) {
+    const properties = command.properties as es.Property[]
+    const keys: string[] = []
+
+    for (const prop of properties) {
+      if (prop.key.type === 'Identifier') {
+        keys.push(prop.key.name)
+      } else if (prop.key.type === 'Literal') {
+        keys.push(String(prop.key.value))
+      }
+    }
+
+    control.push(instr.objLitInstr(keys, command))
+    // Push property values in reverse order
+    for (let i = properties.length - 1; i >= 0; i--) {
+      control.push(properties[i].value)
+    }
+  },
+
   MemberExpression: function (command: es.MemberExpression, context: Context, control: Control) {
     control.push(instr.arrAccInstr(command))
     control.push(command.property)
@@ -1061,6 +1092,352 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       return
     }
 
+    // Handle reset(f) - places delimiter markers on control and stash
+    if (isReset(func)) {
+      // Check for number of arguments mismatch error
+      checkNumberOfArguments(context, func, args, command.srcNode)
+
+      // reset rule: (reset(f):C, S, E) ↪ (app_i(0):reset_control_marker:C, f:reset_stash_marker:S, E)
+      // Push reset control marker
+      control.push(instr.resetControlMarkerInstr(command.srcNode))
+      // Push application instruction to apply the nullary function f
+      control.push(instr.appInstr(0, command.srcNode))
+
+      // Push the function f onto stash
+      stash.push(args[0])
+      // Push reset stash marker below the function
+      const stashItems = stash.getStack()
+      const fValue = stashItems.pop()
+      stashItems.push(new ResetStashMarker())
+      stashItems.push(fValue)
+      stash.setTo(new Stash())
+      for (const item of stashItems) {
+        stash.push(item)
+      }
+      return
+    }
+
+    // Handle shift(f) - captures delimited continuation up to reset marker
+    if (isShift(func)) {
+      // Check for number of arguments mismatch error
+      checkNumberOfArguments(context, func, args, command.srcNode)
+
+      // Get the function f that will receive the continuation
+      const shiftFunction = args[0]
+
+      // Pop control items until we find a reset control marker
+      const capturedControl: ControlItem[] = []
+      const controlStack = control.getStack()
+      let foundMarker = false
+      let markerIndex = -1
+
+      // Find the reset control marker in the control stack
+      for (let i = controlStack.length - 1; i >= 0; i--) {
+        const item = controlStack[i]
+        if (isInstr(item) && item.instrType === InstrType.RESET_CONTROL_MARKER) {
+          foundMarker = true
+          markerIndex = i
+          break
+        }
+      }
+
+      // Pop stash items until we find a reset stash marker
+      const capturedStash: Value[] = []
+      const stashStack = stash.getStack()
+      let stashMarkerIndex = -1
+
+      for (let i = stashStack.length - 1; i >= 0; i--) {
+        if (stashStack[i] instanceof ResetStashMarker) {
+          stashMarkerIndex = i
+          break
+        }
+      }
+
+      if (foundMarker && stashMarkerIndex >= 0) {
+        // shift rule (with markers):
+        // Capture control from current position to marker (inclusive of marker for reinstating)
+        for (let i = markerIndex; i < controlStack.length; i++) {
+          capturedControl.push(controlStack[i])
+        }
+
+        // Capture stash from marker to current position (inclusive of marker)
+        for (let i = stashMarkerIndex; i < stashStack.length; i++) {
+          capturedStash.push(stashStack[i])
+        }
+
+        // Create the delimited continuation
+        // Copy entire environment stack at capture time for multi-shot support
+        const capturedEnvStack = copyEnvironmentStack(context.runtime.environments)
+        const delimitedCont = new DelimitedContinuation(
+          context,
+          capturedControl,
+          capturedStash,
+          capturedEnvStack,
+          currentTransformers(context)
+        )
+
+        // Remove captured items from control (everything from marker onwards)
+        const newControl = new Control()
+        for (let i = 0; i < markerIndex; i++) {
+          newControl.push(controlStack[i])
+        }
+        control.setTo(newControl)
+
+        // Remove captured items from stash (everything from marker onwards)
+        const newStash = new Stash()
+        for (let i = 0; i < stashMarkerIndex; i++) {
+          newStash.push(stashStack[i])
+        }
+        stash.setTo(newStash)
+
+        // Push new reset markers (shift reinstates the delimiter)
+        control.push(instr.resetControlMarkerInstr(command.srcNode))
+        stash.push(new ResetStashMarker())
+
+        // Apply f to the continuation: (app_i(1):reset_control_marker:C, cont:f:reset_stash_marker:S, E)
+        control.push(instr.appInstr(1, command.srcNode))
+        stash.push(shiftFunction)
+        stash.push(delimitedCont)
+      } else {
+        // shift rule (without markers): capture full control and stash like call/cc
+        const fullControl = control.getStack()
+        const fullStash = stash.getStack()
+
+        // Copy entire environment stack at capture time for multi-shot support
+        const capturedEnvStack = copyEnvironmentStack(context.runtime.environments)
+        const delimitedCont = new DelimitedContinuation(
+          context,
+          fullControl,
+          fullStash,
+          capturedEnvStack,
+          currentTransformers(context)
+        )
+
+        // Clear control and stash
+        control.setTo(new Control())
+        stash.setTo(new Stash())
+
+        // Apply f to the continuation
+        control.push(instr.appInstr(1, command.srcNode))
+        stash.push(shiftFunction)
+        stash.push(delimitedCont)
+      }
+      return
+    }
+
+    // Handle withHandle(handler, body) - places handler markers on control and stash
+    if (isWithHandle(func)) {
+      // Check for number of arguments mismatch error
+      checkNumberOfArguments(context, func, args, command.srcNode)
+
+      // withHandle rule:
+      // (withHandle(handler, body):C, S, E) ↪ (app_i(0):handler_control_marker(handler, id):C, body:handler_stash_marker(id):S, E)
+      const handler = args[0] as Record<string, any>
+      const body = args[1]
+
+      // Generate unique id for this handler frame
+      const handlerId = Date.now() + Math.random()
+
+      // Convert handler object to Map
+      const handlerMap: Handler = new Map()
+      for (const key of Object.keys(handler)) {
+        handlerMap.set(key, handler[key])
+      }
+
+      // Push handler control marker
+      control.push(instr.handlerControlMarkerInstr(handlerMap, handlerId, command.srcNode))
+      // Push application instruction to apply the nullary body function
+      control.push(instr.appInstr(0, command.srcNode))
+
+      // Push the body function onto stash
+      stash.push(body)
+      // Push handler stash marker below the body
+      const stashItems = stash.getStack()
+      const bodyValue = stashItems.pop()
+      stashItems.push(new HandlerStashMarker(handlerId))
+      stashItems.push(bodyValue)
+      stash.setTo(new Stash())
+      for (const item of stashItems) {
+        stash.push(item)
+      }
+      return
+    }
+
+    // Handle perform(op, ...args) - captures continuation up to handler that handles op
+    if (isPerform(func)) {
+      // Get the operation name (first argument)
+      const opName = args[0] as string
+
+      // Get the remaining arguments
+      const opArgs = args.slice(1)
+
+      // Find the handler control marker that handles this operation
+      // Search from top of control stack downward to find the nearest enclosing handler,
+      // matching the OCaml S4S semantics (linear search through the control stack)
+      const controlStack = control.getStack()
+      let foundHandler = false
+      let markerIndex = -1
+      let handlerMarker: HandlerControlMarkerInstr | null = null
+
+      for (let i = controlStack.length - 1; i >= 0; i--) {
+        const item = controlStack[i]
+        if (isInstr(item) && item.instrType === InstrType.HANDLER_CONTROL_MARKER) {
+          const marker = item as HandlerControlMarkerInstr
+          if (marker.handler.has(opName)) {
+            foundHandler = true
+            markerIndex = i
+            handlerMarker = marker
+            break
+          }
+        }
+      }
+
+      if (!foundHandler || !handlerMarker) {
+        return handleRuntimeError(
+          context,
+          new errors.ExceptionError(new Error(`No handler found for operation: ${opName}`), UNKNOWN_LOCATION)
+        )
+      }
+
+      // Find the corresponding stash marker
+      const stashStack = stash.getStack()
+      let stashMarkerIndex = -1
+
+      for (let i = stashStack.length - 1; i >= 0; i--) {
+        if (stashStack[i] instanceof HandlerStashMarker && stashStack[i].id === handlerMarker.id) {
+          stashMarkerIndex = i
+          break
+        }
+      }
+
+      if (stashMarkerIndex < 0) {
+        return handleRuntimeError(
+          context,
+          new errors.ExceptionError(new Error(`Handler stash marker not found for operation: ${opName}`), UNKNOWN_LOCATION)
+        )
+      }
+
+      // Capture control from marker to current position (inclusive of marker for deep handlers)
+      // The marker will be reinstalled when the continuation is applied
+      const capturedControl: ControlItem[] = []
+      for (let i = markerIndex; i < controlStack.length; i++) {
+        capturedControl.push(controlStack[i])
+      }
+
+      // Capture stash from marker to current position (inclusive of marker)
+      const capturedStash: Value[] = []
+      for (let i = stashMarkerIndex; i < stashStack.length; i++) {
+        capturedStash.push(stashStack[i])
+      }
+
+      // Create the delimited continuation with handler info
+      // Copy entire environment stack at capture time for multi-shot support
+      const capturedEnvStack = copyEnvironmentStack(context.runtime.environments)
+      const delimitedCont = new DelimitedContinuation(
+        context,
+        capturedControl,
+        capturedStash,
+        capturedEnvStack,
+        currentTransformers(context),
+        handlerMarker.handler,
+        handlerMarker.id
+      )
+
+      // Remove captured items from control (everything from marker onwards)
+      // The markers are already included in the captured continuation for deep handler semantics
+      const newControl = new Control()
+      for (let i = 0; i < markerIndex; i++) {
+        newControl.push(controlStack[i])
+      }
+      control.setTo(newControl)
+
+      // Remove captured items from stash (everything from marker onwards)
+      const newStash = new Stash()
+      for (let i = 0; i < stashMarkerIndex; i++) {
+        newStash.push(stashStack[i])
+      }
+      stash.setTo(newStash)
+
+      // Get the handler function for this operation
+      const handlerFn = handlerMarker.handler.get(opName)
+
+      // Apply handler function: handler takes (k, ...args) where k is the continuation
+      // Push application instruction for (1 + number of op args) arguments
+      control.push(instr.appInstr(1 + opArgs.length, command.srcNode))
+
+      // Push handler function and arguments onto stash
+      stash.push(handlerFn)
+      stash.push(delimitedCont)
+      for (const arg of opArgs) {
+        stash.push(arg)
+      }
+
+      return
+    }
+
+    // Handle delimited continuation application
+    if (func instanceof DelimitedContinuation) {
+      // Check for number of arguments mismatch error
+      checkNumberOfArguments(context, func, args, command.srcNode)
+
+      // Continuation application rule (following OCaml S4S):
+      // (app_i(1):C, v:cont(C', S', E'):S, E) ↪ (C' ++ env_i(E):C, v:S' ++ S, E')
+
+      // Get the captured state from the continuation
+      const contControl = func.getControl()
+      const contStash = func.getStash()
+      const contEnvStack = func.getEnvStack()
+
+      // Build new control: captured control ++ env_i(current_env) ++ current control
+      const currentControlStack = control.getStack()
+      const newControl = new Control()
+
+      // First push current control items
+      for (const item of currentControlStack) {
+        newControl.push(item)
+      }
+
+      // Push environment stack restoration instruction to restore entire env stack after continuation finishes
+      // Using the new ENV_STACK_RESTORE instruction since we replace the whole stack, not just pop to an environment
+      // IMPORTANT: Copy the stack now, as it will be modified by the captured continuation
+      newControl.push(instr.envStackRestoreInstr(copyEnvironmentStack(context.runtime.environments), currentTransformers(context), command.srcNode))
+
+      // Push captured control items
+      for (const item of contControl) {
+        newControl.push(item)
+      }
+
+      control.setTo(newControl)
+
+      // Build new stash: v : captured stash ++ current stash
+      const currentStashStack = stash.getStack()
+      const newStash = new Stash()
+
+      // First push current stash items
+      for (const item of currentStashStack) {
+        newStash.push(item)
+      }
+
+      // Push captured stash items
+      for (const item of contStash) {
+        newStash.push(item)
+      }
+
+      // Push the argument value on top
+      for (const arg of args) {
+        newStash.push(arg)
+      }
+
+      stash.setTo(newStash)
+
+      // Restore the environment from the continuation
+      // Copy at application time for multi-shot support (each invocation needs fresh copy)
+      // Directly replace the environment stack like OCaml S4S does
+      context.runtime.environments = copyEnvironmentStack(contEnvStack)
+
+      return
+    }
+
     if (func instanceof Continuation) {
       // Check for number of arguments mismatch error
       checkNumberOfArguments(context, func, args, command.srcNode)
@@ -1177,6 +1554,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         handleRuntimeError(context, new errors.ExceptionError(error, loc))
       }
     }
+    return
   },
 
   [InstrType.BRANCH]: function (
@@ -1210,9 +1588,23 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
 
   [InstrType.ENVIRONMENT]: function (command: EnvInstr, context: Context) {
     // Restore environment
-    while (currentEnvironment(context).id !== command.env.id) {
-      popEnvironment(context)
+    if (!command.env || !currentEnvironment(context)) {
+      return
     }
+    while (currentEnvironment(context) && currentEnvironment(context).id !== command.env.id) {
+      popEnvironment(context)
+      if (!currentEnvironment(context)) {
+        return
+      }
+    }
+    // restore transformers environment
+    setTransformers(context, command.transformers)
+  },
+
+  [InstrType.ENV_STACK_RESTORE]: function (command: EnvStackRestoreInstr, context: Context) {
+    // Restore the entire environment stack (used after delimited continuation application)
+    // The envStack was already copied when the instruction was created
+    context.runtime.environments = command.envStack
     // restore transformers environment
     setTransformers(context, command.transformers)
   },
@@ -1230,6 +1622,21 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
     handleArrayCreation(context, array)
     stash.push(array)
+  },
+
+  [InstrType.OBJECT_LITERAL]: function (
+    command: ObjLitInstr,
+    context: Context,
+    control: Control,
+    stash: Stash
+  ) {
+    const keys = command.keys
+    const obj: Record<string, any> = {}
+    // Pop values in reverse order (they were pushed in reverse)
+    for (let i = keys.length - 1; i >= 0; i--) {
+      obj[keys[i]] = stash.pop()
+    }
+    stash.push(obj)
   },
 
   [InstrType.ARRAY_ACCESS]: function (
@@ -1332,6 +1739,96 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         ;(cont[i] as AppInstr).numOfArgs += array.length - 1
         break // only the nearest call instruction above
       }
+    }
+  },
+
+  // Delimited continuation marker rule:
+  // (reset_control_marker:C, v:reset_stash_marker:S, E) ↪ (C, v:S, E)
+  // When the control marker is reached, the stash should have a value above the stash marker.
+  // We remove both markers and keep the value.
+  [InstrType.RESET_CONTROL_MARKER]: function (
+    _command: Instr,
+    _context: Context,
+    _control: Control,
+    stash: Stash
+  ) {
+    // Get the stash stack
+    const stashStack = stash.getStack()
+
+    // The top of the stash should be the result value
+    // Below it should be the reset stash marker
+    // Find the topmost reset stash marker and remove it along with keeping the value above it
+
+    // Find the reset stash marker
+    let markerIndex = -1
+    for (let i = stashStack.length - 1; i >= 0; i--) {
+      if (stashStack[i] instanceof ResetStashMarker) {
+        markerIndex = i
+        break
+      }
+    }
+
+    if (markerIndex >= 0) {
+      // Get the value(s) above the marker
+      const valuesAboveMarker = stashStack.slice(markerIndex + 1)
+
+      // Create new stash without the marker but with the values
+      const newStash = new Stash()
+      for (let i = 0; i < markerIndex; i++) {
+        newStash.push(stashStack[i])
+      }
+      // Push the values that were above the marker
+      for (const v of valuesAboveMarker) {
+        newStash.push(v)
+      }
+
+      stash.setTo(newStash)
+    }
+    // If no marker found, just continue (shouldn't happen in well-formed programs)
+  },
+
+  // Handler control marker rule:
+  // (handler_control_marker(handler, id):C, v:handler_stash_marker(id):S, E) ↪ (C, v:S, E)
+  // When the handler control marker is reached, the handler block has completed.
+  // We remove both markers and keep the value.
+  [InstrType.HANDLER_CONTROL_MARKER]: function (
+    command: HandlerControlMarkerInstr,
+    context: Context,
+    _control: Control,
+    stash: Stash
+  ) {
+    // Get the stash stack
+    const stashStack = stash.getStack()
+
+    // Find the handler stash marker with the matching id
+    let markerIndex = -1
+    for (let i = stashStack.length - 1; i >= 0; i--) {
+      if (stashStack[i] instanceof HandlerStashMarker && stashStack[i].id === command.id) {
+        markerIndex = i
+        break
+      }
+    }
+
+    if (markerIndex >= 0) {
+      // Get the value(s) above the marker
+      const valuesAboveMarker = stashStack.slice(markerIndex + 1)
+
+      // Create new stash without the marker but with the values
+      const newStash = new Stash()
+      for (let i = 0; i < markerIndex; i++) {
+        newStash.push(stashStack[i])
+      }
+      // Push the values that were above the marker
+      for (const v of valuesAboveMarker) {
+        newStash.push(v)
+      }
+
+      stash.setTo(newStash)
+    } else {
+      // Stash marker not found - this can happen with deep handlers after continuation application
+      // The marker may have been captured in a continuation and is no longer present
+      // In this case, just leave the stash as is - the value should propagate correctly
+      // This is a no-op for cleanup
     }
   }
 }

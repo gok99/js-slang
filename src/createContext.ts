@@ -9,7 +9,7 @@ import {
   schemeFullPrelude
 } from './stdlib/scheme.prelude'
 import { GLOBAL, JSSLANG_PROPERTIES } from './constants'
-import { call_with_current_continuation } from './cse-machine/continuations'
+import { call_with_current_continuation, shift, reset, withHandle, perform } from './cse-machine/continuations'
 import Heap from './cse-machine/heap'
 import * as list from './stdlib/list'
 import { list_to_vector } from './stdlib/list'
@@ -301,7 +301,7 @@ export const importBuiltins = (context: Context, externalBuiltIns: CustomBuiltIn
     return v[0]
   }
 
-  if (context.chapter >= 1) {
+  if (context.chapter >= 1 || context.chapter === Chapter.DELIM_CONT) {
     defineBuiltin(context, 'get_time()', misc.get_time)
     defineBuiltin(context, 'display(val, prepend = undefined)', display, 1)
     defineBuiltin(context, 'raw_display(str, prepend = undefined)', rawDisplay, 1)
@@ -341,7 +341,7 @@ export const importBuiltins = (context: Context, externalBuiltIns: CustomBuiltIn
     }
   }
 
-  if (context.chapter >= 2) {
+  if (context.chapter >= 2 || context.chapter === Chapter.DELIM_CONT) {
     // List library
     defineBuiltin(context, 'pair(left, right)', list.pair)
     defineBuiltin(context, 'is_pair(val)', list.is_pair)
@@ -354,7 +354,7 @@ export const importBuiltins = (context: Context, externalBuiltIns: CustomBuiltIn
     defineBuiltin(context, 'is_list(val)', list.is_list)
   }
 
-  if (context.chapter >= 3) {
+  if (context.chapter >= 3 || context.chapter === Chapter.DELIM_CONT) {
     defineBuiltin(context, 'set_head(xs, val)', list.set_head)
     defineBuiltin(context, 'set_tail(xs, val)', list.set_tail)
     defineBuiltin(context, 'array_length(arr)', misc.array_length)
@@ -364,7 +364,7 @@ export const importBuiltins = (context: Context, externalBuiltIns: CustomBuiltIn
     defineBuiltin(context, 'stream(...values)', stream.stream, 0)
   }
 
-  if (context.chapter >= 4) {
+  if (context.chapter >= 4 || context.chapter === Chapter.DELIM_CONT) {
     defineBuiltin(context, 'parse(program_string)', (str: string) =>
       parser.parse(str, createContext(context.chapter))
     )
@@ -379,7 +379,7 @@ export const importBuiltins = (context: Context, externalBuiltIns: CustomBuiltIn
     )
 
     // Continuations for explicit-control variant
-    if (context.chapter >= 4) {
+    if (context.chapter >= 4 || context.chapter === Chapter.DELIM_CONT) {
       defineBuiltin(
         context,
         'call_cc(f)',
@@ -387,6 +387,46 @@ export const importBuiltins = (context: Context, externalBuiltIns: CustomBuiltIn
           ? call_with_current_continuation
           : (f: any) => {
               throw new Error('call_cc is only available in Explicit-Control variant')
+            }
+      )
+
+      // Delimited continuations (shift/reset) for explicit-control variant
+      defineBuiltin(
+        context,
+        'shift(f)',
+        context.variant === Variant.EXPLICIT_CONTROL
+          ? shift
+          : (f: any) => {
+              throw new Error('shift is only available in Explicit-Control variant')
+            }
+      )
+      defineBuiltin(
+        context,
+        'reset(f)',
+        context.variant === Variant.EXPLICIT_CONTROL
+          ? reset
+          : (f: any) => {
+              throw new Error('reset is only available in Explicit-Control variant')
+            }
+      )
+
+      // Effect handlers for explicit-control variant
+      defineBuiltin(
+        context,
+        'withHandle(handler, body)',
+        context.variant === Variant.EXPLICIT_CONTROL
+          ? withHandle
+          : (handler: any, body: any) => {
+              throw new Error('withHandle is only available in Explicit-Control variant')
+            }
+      )
+      defineBuiltin(
+        context,
+        'perform(op, ...args)',
+        context.variant === Variant.EXPLICIT_CONTROL
+          ? perform
+          : (op: string, ...args: any[]) => {
+              throw new Error('perform is only available in Explicit-Control variant')
             }
       )
     }
