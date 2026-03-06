@@ -1,8 +1,8 @@
-import { Comment, SourceLocation, ReturnStatement } from 'estree'
-import { StepperBaseNode } from '../../interface'
-import { convert } from '../../generator'
-import { StepperExpression, StepperPattern } from '..'
+import type { Comment, ReturnStatement, SourceLocation } from 'estree'
+import type { StepperExpression, StepperPattern } from '..'
 import { redex } from '../..'
+import { convert } from '../../generator'
+import type { StepperBaseNode } from '../../interface'
 
 export class StepperReturnStatement implements ReturnStatement, StepperBaseNode {
   type: 'ReturnStatement'
@@ -51,7 +51,7 @@ export class StepperReturnStatement implements ReturnStatement, StepperBaseNode 
     }
     redex.preRedex = [this]
     redex.postRedex = [this.argument]
-    return this.argument as StepperExpression
+    return this.argument
   }
 
   contractEmpty() {
@@ -68,7 +68,7 @@ export class StepperReturnStatement implements ReturnStatement, StepperBaseNode 
 
   substitute(id: StepperPattern, value: StepperExpression): StepperBaseNode {
     return new StepperReturnStatement(
-      this.argument ? (this.argument.substitute(id, value) as StepperExpression) : null,
+      this.argument ? this.argument.substitute(id, value) : null,
       this.leadingComments,
       this.trailingComments,
       this.loc,
@@ -86,7 +86,7 @@ export class StepperReturnStatement implements ReturnStatement, StepperBaseNode 
 
   rename(before: string, after: string): StepperReturnStatement {
     return new StepperReturnStatement(
-      this.argument ? (this.argument.rename(before, after) as StepperExpression) : null,
+      this.argument ? this.argument.rename(before, after) : null,
       this.leadingComments,
       this.trailingComments,
       this.loc,

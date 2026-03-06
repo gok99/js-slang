@@ -1,39 +1,9 @@
-import * as es from 'estree'
+import type es from 'estree'
 
-import { Context, Environment } from '../types'
-import { Control, Stash, Transformers } from './interpreter'
-import { ControlItem, Handler } from './types'
+import type { Context, Environment, Value } from '../types'
+import type { Control, Stash } from './interpreter'
+import type { ControlItem, Handler } from './types'
 import { uniqueId } from './utils'
-
-/**
- * A dummy function used to detect for the apply function object.
- * If the interpreter sees this specific function, it applies the function
- * with the given arguments to apply.
- *
- * We need this to be a metaprocedure so that it can properly handle
- * the arguments passed to it, even if they are continuations.
- */
-export class Apply extends Function {
-  private static instance: Apply = new Apply()
-
-  private constructor() {
-    super()
-  }
-
-  public static get(): Apply {
-    return Apply.instance
-  }
-
-  public toString(): string {
-    return 'apply'
-  }
-}
-
-export const apply = Apply.get()
-
-export function isApply(value: any): boolean {
-  return value === apply
-}
 
 /**
  * A dummy function used to detect for the call/cc function object.
@@ -74,23 +44,15 @@ export class Continuation extends Function {
   private control: Control
   private stash: Stash
   private env: Environment[]
-  private transformers: Transformers
 
   /** Unique ID defined for continuation */
   public readonly id: string
 
-  constructor(
-    context: Context,
-    control: Control,
-    stash: Stash,
-    env: Environment[],
-    transformers: Transformers
-  ) {
+  constructor(context: Context, control: Control, stash: Stash, env: Environment[]) {
     super()
     this.control = control.copy()
     this.stash = stash.copy()
     this.env = [...env]
-    this.transformers = transformers
     this.id = uniqueId(context)
   }
 
@@ -106,10 +68,6 @@ export class Continuation extends Function {
 
   public getEnv(): Environment[] {
     return [...this.env]
-  }
-
-  public getTransformers(): Transformers {
-    return this.transformers
   }
 
   public toString(): string {
@@ -210,11 +168,9 @@ export class DelimitedContinuation extends Function {
   /** Captured control items up to the delimiter */
   private control: ControlItem[]
   /** Captured stash values up to the delimiter */
-  private stash: any[]
+  private stash: Value[]
   /** Environment stack at the point of capture (full call stack, not just lexical chain) */
   private envStack: Environment[]
-  /** Transformers at the point of capture */
-  private transformers: Transformers
 
   /** Unique ID for this continuation */
   public readonly id: string
@@ -226,18 +182,15 @@ export class DelimitedContinuation extends Function {
   constructor(
     context: Context,
     control: ControlItem[],
-    stash: any[],
+    stash: Value[],
     envStack: Environment[],
-    transformers: Transformers,
     handler?: Handler,
     handlerId?: number
   ) {
     super()
-    // Store copies of the captured state
     this.control = [...control]
     this.stash = [...stash]
     this.envStack = [...envStack]
-    this.transformers = transformers
     this.id = uniqueId(context)
     this.handler = handler
     this.handlerId = handlerId
@@ -247,16 +200,12 @@ export class DelimitedContinuation extends Function {
     return [...this.control]
   }
 
-  public getStash(): any[] {
+  public getStash(): Value[] {
     return [...this.stash]
   }
 
   public getEnvStack(): Environment[] {
     return [...this.envStack]
-  }
-
-  public getTransformers(): Transformers {
-    return this.transformers
   }
 
   public toString(): string {

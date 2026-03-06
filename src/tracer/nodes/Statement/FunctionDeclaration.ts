@@ -1,11 +1,11 @@
-import { Comment, FunctionDeclaration, SourceLocation } from 'estree'
-import { StepperBaseNode } from '../../interface'
-import { StepperIdentifier } from '../Expression/Identifier'
-import { StepperExpression, StepperPattern, undefinedNode } from '..'
-import { convert } from '../../generator'
+import type { Comment, FunctionDeclaration, SourceLocation } from 'estree'
+import { type StepperExpression, type StepperPattern, undefinedNode } from '..'
 import { redex } from '../..'
-import { StepperArrowFunctionExpression } from '../Expression/ArrowFunctionExpression'
+import { convert } from '../../generator'
+import type { StepperBaseNode } from '../../interface'
 import { getFreshName } from '../../utils'
+import { StepperArrowFunctionExpression } from '../Expression/ArrowFunctionExpression'
+import { StepperIdentifier } from '../Expression/Identifier'
 import { StepperBlockStatement } from './BlockStatement'
 import { StepperVariableDeclaration } from './VariableDeclaration'
 
@@ -109,7 +109,7 @@ export class StepperFunctionDeclaration implements FunctionDeclaration, StepperB
           return ast.declarations.map(ast => ast.id.name)
         } else {
           // Function Declaration
-          return [(ast as StepperFunctionDeclaration).id.name]
+          return [ast.id.name]
         }
       })
     return [...paramNames, ...bodyDeclarations]
@@ -131,7 +131,7 @@ export class StepperFunctionDeclaration implements FunctionDeclaration, StepperB
 
     const currentFunction = newNames.reduce(
       (current: StepperFunctionDeclaration, name: string, index: number) =>
-        current.rename(repeatedNames[index], name) as StepperFunctionDeclaration,
+        current.rename(repeatedNames[index], name),
       this
     )
 

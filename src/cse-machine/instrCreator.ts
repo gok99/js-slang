@@ -2,30 +2,31 @@
  * Utility functions for creating the various control instructions.
  */
 
-import * as es from 'estree'
+import type es from 'estree'
 
-import { Environment, Node } from '../types'
+import type { Environment, Node } from '../types'
 import {
-  AppInstr,
-  ArrLitInstr,
-  AssmtInstr,
-  BinOpInstr,
-  BranchInstr,
-  EnvInstr,
-  EnvStackRestoreInstr,
-  ForInstr,
-  Handler,
-  HandlerControlMarkerInstr,
-  Instr,
+  type AppInstr,
+  type ArrLitInstr,
+  type AssmtInstr,
+  type BinOpInstr,
+  type BranchInstr,
+  type DeclAssmtInstr,
+  type EnvInstr,
+  type EnvStackRestoreInstr,
+  type ForInstr,
+  type Handler,
+  type HandlerControlMarkerInstr,
+  type Instr,
   InstrType,
-  ObjLitInstr,
-  PerformInstr,
-  ResetControlMarkerInstr,
-  RunWithHandlerInstr,
-  UnOpInstr,
-  WhileInstr
+  type ObjLitInstr,
+  type PerformInstr,
+  type RegularAssmtInstr,
+  type ResetControlMarkerInstr,
+  type RunWithHandlerInstr,
+  type UnOpInstr,
+  type WhileInstr
 } from './types'
-import { Transformers } from './interpreter'
 
 export const resetInstr = (srcNode: Node): Instr => ({
   instrType: InstrType.RESET,
@@ -44,7 +45,7 @@ export const forInstr = (
   test: es.Expression,
   update: es.Expression,
   body: es.Statement,
-  srcNode: Node
+  srcNode: es.ForStatement
 ): ForInstr => ({
   instrType: InstrType.FOR,
   init,
@@ -54,20 +55,31 @@ export const forInstr = (
   srcNode
 })
 
-export const assmtInstr = (
+export function assmtInstr(symbol: string, srcNode: es.VariableDeclaration): DeclAssmtInstr
+export function assmtInstr(symbol: string, srcNode: es.AssignmentExpression): RegularAssmtInstr
+export function assmtInstr(
   symbol: string,
-  constant: boolean,
-  declaration: boolean,
-  srcNode: Node
-): AssmtInstr => ({
-  instrType: InstrType.ASSIGNMENT,
-  symbol,
-  constant,
-  declaration,
-  srcNode
-})
+  srcNode: es.VariableDeclaration | es.AssignmentExpression
+): AssmtInstr {
+  if (srcNode.type === 'VariableDeclaration') {
+    return {
+      instrType: InstrType.ASSIGNMENT,
+      symbol,
+      constant: srcNode.kind === 'const',
+      declaration: true,
+      srcNode
+    }
+  }
 
-export const unOpInstr = (symbol: es.UnaryOperator, srcNode: Node): UnOpInstr => ({
+  return {
+    instrType: InstrType.ASSIGNMENT,
+    symbol,
+    declaration: false,
+    srcNode
+  }
+}
+
+export const unOpInstr = (symbol: es.UnaryOperator, srcNode: es.UnaryExpression): UnOpInstr => ({
   instrType: InstrType.UNARY_OP,
   symbol,
   srcNode
@@ -98,14 +110,9 @@ export const branchInstr = (
   srcNode
 })
 
-export const envInstr = (
-  env: Environment,
-  transformers: Transformers,
-  srcNode: Node
-): EnvInstr => ({
+export const envInstr = (env: Environment, srcNode: Node): EnvInstr => ({
   instrType: InstrType.ENVIRONMENT,
   env,
-  transformers,
   srcNode
 })
 
@@ -197,11 +204,9 @@ export const performInstr = (op: string, arity: number, srcNode: Node): PerformI
 
 export const envStackRestoreInstr = (
   envStack: Environment[],
-  transformers: Transformers,
   srcNode: Node
 ): EnvStackRestoreInstr => ({
   instrType: InstrType.ENV_STACK_RESTORE,
   envStack,
-  transformers,
   srcNode
 })

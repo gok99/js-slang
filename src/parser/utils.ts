@@ -1,9 +1,9 @@
 import {
+  parse as acornParse,
+  parseExpressionAt as acornParseAt,
   type Comment,
   ecmaVersion,
   type Node,
-  parse as acornParse,
-  parseExpressionAt as acornParseAt,
   type Position
 } from 'acorn'
 import { parse as acornLooseParse } from 'acorn-loose'
@@ -11,7 +11,7 @@ import type { Program, SourceLocation } from 'estree'
 
 import type { Context } from '..'
 import { DEFAULT_ECMA_VERSION } from '../constants'
-import type { SourceError } from '../types'
+import type { SourceError } from '../errors/base'
 import { validateAndAnnotate } from '../validator/validator'
 import { MissingSemicolonError, TrailingCommaError } from './errors'
 import type { AcornOptions, BabelOptions } from './types'

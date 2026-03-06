@@ -1,5 +1,6 @@
 import createContext from '../createContext'
-import { Chapter, Value } from '../types'
+import { Chapter } from '../langs'
+import type { Value } from '../types'
 import * as list from './list'
 import * as misc from './misc'
 import * as parser from './parser'
@@ -16,9 +17,9 @@ export const chapter_1 = {
   parse_int: misc.parse_int,
   char_at: misc.char_at,
   arity: misc.arity,
-  undefined: undefined,
-  NaN: NaN,
-  Infinity: Infinity
+  undefined,
+  NaN,
+  Infinity
 }
 
 export const chapter_2 = {
@@ -49,7 +50,6 @@ export const chapter_4 = {
   ...chapter_3,
   parse: (str: string, chapter: Chapter) => parser.parse(str, createContext(chapter)),
   tokenize: (str: string, chapter: Chapter) => parser.tokenize(str, createContext(chapter)),
-  // tslint:disable-next-line:ban-types
   apply_in_underlying_javascript: (fun: Function, args: Value) =>
     fun.apply(fun, list.list_to_vector(args))
 }
@@ -60,7 +60,6 @@ export const chapter_library_parser = {
   is_NaN: misc.is_NaN,
   has_own_property: misc.has_own_property
   // defineBuiltin(context, 'alert(val)', alert)
-  // tslint:disable-next-line:ban-types
   // timed: (f: Function: context: Context) => misc.timed(context, f, context.externalContext, externalBuiltIns.rawDisplay),
 }
 

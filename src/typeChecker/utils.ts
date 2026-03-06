@@ -2,10 +2,10 @@
 // Helper functions/constants for type checker and type error checker
 // =======================================
 
-import {
+import { Chapter } from '../langs'
+import type {
   AllowedDeclarations,
   BindableType,
-  Chapter,
   ForAll,
   FunctionType,
   List,

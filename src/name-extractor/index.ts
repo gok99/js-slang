@@ -2,13 +2,13 @@ import acorn from 'acorn'
 import type es from 'estree'
 
 import { partition } from 'lodash'
-import type { Context } from '../'
 import { UNKNOWN_LOCATION } from '../constants'
 import { findAncestors, findIdentifierNode } from '../finder'
 import { memoizedGetModuleDocsAsync, memoizedGetModuleManifestAsync } from '../modules/loader'
 import type { ModuleDocsEntry } from '../modules/moduleTypes'
 import { isSourceModule } from '../modules/utils'
 import syntaxBlacklist from '../parser/source/syntax'
+import type { Context, Node } from '../types'
 import { getImportedName, getModuleDeclarationSource } from '../utils/ast/helpers'
 import { isDeclaration, isImportDeclaration, isNamespaceSpecifier } from '../utils/ast/typeGuards'
 
@@ -20,7 +20,6 @@ export enum DeclarationKind {
   KIND_CONST = 'const',
   KIND_KEYWORD = 'keyword'
 }
-import { Node } from '../types'
 
 export interface NameDeclaration {
   name: string
@@ -174,7 +173,6 @@ export async function getProgramNames(
 
   while (queue.length > 0) {
     // Workaround due to minification problem
-    // tslint:disable-next-line
     const node = queue.shift()!
     if (isFunction(node)) {
       // This is the only time we want raw identifiers
@@ -422,7 +420,7 @@ async function getNames(node: Node, locTest: (node: Node) => boolean): Promise<N
             }
           })
         )
-      } catch (err) {
+      } catch {
         // Failed to load docs for whatever reason
         return specs.map(spec => ({
           name: spec.local.name,

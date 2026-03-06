@@ -7,30 +7,31 @@ Every class should have the following properties
 - static create: factory method to parse estree to StepperAST
 */
 
-import * as es from 'estree'
 import { generate } from 'astring'
-import { StepperBinaryExpression } from './nodes/Expression/BinaryExpression'
-import { StepperUnaryExpression } from './nodes/Expression/UnaryExpression'
-import { StepperLiteral } from './nodes/Expression/Literal'
+import type es from 'estree'
+import { isBuiltinFunction } from './builtins'
 import { StepperBaseNode } from './interface'
-import { StepperExpressionStatement } from './nodes/Statement/ExpressionStatement'
+import { StepperArrayExpression } from './nodes/Expression/ArrayExpression'
+import { StepperArrowFunctionExpression } from './nodes/Expression/ArrowFunctionExpression'
+import { StepperBinaryExpression } from './nodes/Expression/BinaryExpression'
+import { StepperBlockExpression } from './nodes/Expression/BlockExpression'
+import { StepperConditionalExpression } from './nodes/Expression/ConditionalExpression'
+import { StepperFunctionApplication } from './nodes/Expression/FunctionApplication'
+import { StepperIdentifier } from './nodes/Expression/Identifier'
+import { StepperLiteral } from './nodes/Expression/Literal'
+import { StepperLogicalExpression } from './nodes/Expression/LogicalExpression'
+import { StepperUnaryExpression } from './nodes/Expression/UnaryExpression'
 import { StepperProgram } from './nodes/Program'
+import { StepperBlockStatement } from './nodes/Statement/BlockStatement'
+import { StepperExpressionStatement } from './nodes/Statement/ExpressionStatement'
+import { StepperFunctionDeclaration } from './nodes/Statement/FunctionDeclaration'
+import { StepperIfStatement } from './nodes/Statement/IfStatement'
+import { StepperReturnStatement } from './nodes/Statement/ReturnStatement'
 import {
   StepperVariableDeclaration,
   StepperVariableDeclarator
 } from './nodes/Statement/VariableDeclaration'
-import { StepperIdentifier } from './nodes/Expression/Identifier'
-import { StepperBlockStatement } from './nodes/Statement/BlockStatement'
-import { StepperIfStatement } from './nodes/Statement/IfStatement'
-import { StepperConditionalExpression } from './nodes/Expression/ConditionalExpression'
-import { StepperArrowFunctionExpression } from './nodes/Expression/ArrowFunctionExpression'
-import { StepperFunctionApplication } from './nodes/Expression/FunctionApplication'
-import { StepperReturnStatement } from './nodes/Statement/ReturnStatement'
-import { StepperFunctionDeclaration } from './nodes/Statement/FunctionDeclaration'
-import { StepperArrayExpression } from './nodes/Expression/ArrayExpression'
-import { StepperLogicalExpression } from './nodes/Expression/LogicalExpression'
-import { StepperBlockExpression } from './nodes/Expression/BlockExpression'
-import { isBuiltinFunction } from './builtins'
+
 const undefinedNode = new StepperLiteral('undefined')
 
 const nodeConverters: { [Key: string]: (node: any) => StepperBaseNode } = {
@@ -120,7 +121,7 @@ export function explain(redex: StepperBaseNode): string {
       if (!node.argument) {
         throw new Error('return argument should not be empty')
       }
-      return generate(node.argument!) + ' returned'
+      return generate(node.argument) + ' returned'
     },
     FunctionDeclaration: (node: StepperFunctionDeclaration) => {
       return `Function ${node.id.name} declared, parameter(s) ${node.params.map(x =>
@@ -144,7 +145,7 @@ export function explain(redex: StepperBaseNode): string {
       if (test.type !== 'Literal') {
         throw new Error('Invalid conditional contraction. `test` should be literal.')
       }
-      const testStatus = (test as StepperLiteral).value
+      const testStatus = test.value
       if (typeof testStatus !== 'boolean') {
         throw new Error(
           'Invalid conditional contraction. `test` should be boolean, got ' +
@@ -167,7 +168,7 @@ export function explain(redex: StepperBaseNode): string {
       const func: StepperArrowFunctionExpression = node.callee as StepperArrowFunctionExpression
       if (func.name && isBuiltinFunction(func.name)) {
         return `${func.name} runs`
-        // @ts-ignore func.body.type can be StepperBlockExpression
+        // @ts-expect-error func.body.type can be StepperBlockExpression
       } else if (func.body.type === 'BlockStatement') {
         if (func.params.length === 0) {
           return '() => {...}' + ' runs'
@@ -213,7 +214,7 @@ export function explain(redex: StepperBaseNode): string {
       return '...'
     }
   }
-  //@ts-ignore gracefully handle default ast node
+  //@ts-expect-error gracefully handle default ast node
   const explainer = explainers[redex.type] ?? explainers.Default
   return explainer(redex)
 }

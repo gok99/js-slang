@@ -2,26 +2,37 @@
  * This interpreter implements an explicit-control evaluator.
  *
  * Heavily adapted from https://github.com/source-academy/JSpike/
- * and the legacy interpreter at '../interpreter/interpreter'
+ * and the legacy interpreter
  */
 
-/* tslint:disable:max-classes-per-file */
-import * as es from 'estree'
+import type es from 'estree'
 import { isArray } from 'lodash'
 
-import { IOptions } from '..'
+import type { IOptions } from '..'
 import { UNKNOWN_LOCATION } from '../constants'
 import * as errors from '../errors/errors'
 import { RuntimeSourceError } from '../errors/runtimeSourceError'
 import { checkEditorBreakpoints } from '../stdlib/inspector'
-import { Context, ContiguousArrayElements, Result, Value, type StatementSequence } from '../types'
+import type {
+  Context,
+  ContiguousArrayElements,
+  Node,
+  NodeTypeToNode,
+  Result,
+  StatementSequence,
+  Value
+} from '../types'
 import * as ast from '../utils/ast/astCreator'
-import { filterImportDeclarations } from '../utils/ast/helpers'
+import {
+  filterImportDeclarations,
+  getSourceVariableDeclaration,
+  hasNoDeclarations,
+  hasNoImportDeclarations
+} from '../utils/ast/helpers'
 import { evaluateBinaryExpression, evaluateUnaryExpression } from '../utils/operators'
 import * as rttc from '../utils/rttc'
 import * as seq from '../utils/statementSeqTransform'
 import { checkProgramForUndefinedVariables } from '../validator/validator'
-import { isSchemeLanguage } from '../alt-langs/mapper'
 import Closure from './closure'
 import {
   Continuation,
@@ -36,27 +47,17 @@ import {
 import * as instr from './instrCreator'
 import { Stack } from './stack'
 import {
-  AppInstr,
-  ArrLitInstr,
-  AssmtInstr,
-  BinOpInstr,
-  BranchInstr,
+  type AppInstr,
   CSEBreak,
-  ControlItem,
+  type ControlItem,
   CseError,
-  EnvInstr,
-  EnvStackRestoreInstr,
-  ForInstr,
-  Handler,
-  HandlerControlMarkerInstr,
+  type EnvStackRestoreInstr,
+  type Handler,
+  type HandlerControlMarkerInstr,
   HandlerStashMarker,
-  Instr,
   InstrType,
-  ObjLitInstr,
-  ResetStashMarker,
-  UnOpInstr,
-  WhileInstr,
-  SpreadInstr
+  type InstrTypeToInstr,
+  ResetStashMarker
 } from './types'
 import {
   checkNumberOfArguments,
@@ -66,7 +67,6 @@ import {
   createEnvironment,
   createProgramEnvironment,
   currentEnvironment,
-  currentTransformers,
   declareFunctionsAndVariables,
   declareIdentifier,
   defineVariable,
@@ -77,8 +77,6 @@ import {
   handleSequence,
   hasBreakStatement,
   hasContinueStatement,
-  hasDeclarations,
-  hasImportDeclarations,
   isBlockStatement,
   isEnvArray,
   isEnvDependent,
@@ -89,21 +87,9 @@ import {
   popEnvironment,
   pushEnvironment,
   reduceConditional,
-  setTransformers,
   setVariable,
   valueProducing
 } from './utils'
-import { isApply, isEval, schemeEval } from './scheme-macros'
-import { Transformer } from './patterns'
-import { flattenList, isList } from './macro-utils'
-
-type CmdEvaluator = (
-  command: ControlItem,
-  context: Context,
-  control: Control,
-  stash: Stash,
-  isPrelude: boolean
-) => void
 
 /**
  * The control is a list of commands that still needs to be executed by the machine.
@@ -120,6 +106,11 @@ export class Control extends Stack<ControlItem> {
 
   public canAvoidEnvInstr(): boolean {
     return this.numEnvDependentItems === 0
+  }
+
+  public setTo(otherControl: Control): void {
+    super.setTo(otherControl)
+    this.numEnvDependentItems = otherControl.numEnvDependentItems
   }
 
   // For testing purposes
@@ -155,7 +146,7 @@ export class Control extends Stack<ControlItem> {
   private static simplifyBlocksWithoutDeclarations(...items: ControlItem[]): ControlItem[] {
     const itemsNew: ControlItem[] = []
     items.forEach(item => {
-      if (isNode(item) && isBlockStatement(item) && !hasDeclarations(item)) {
+      if (isNode(item) && isBlockStatement(item) && hasNoDeclarations(item.body)) {
         // Push block body as statement sequence
         const seq: StatementSequence = ast.statementSequence(item.body, item.loc)
         itemsNew.push(seq)
@@ -191,53 +182,6 @@ export class Stash extends Stack<Value> {
 }
 
 /**
- * The T component is a dictionary of mappings from syntax names to
- * their corresponding syntax rule transformers (patterns).
- *
- * Similar to the E component, there is a matching
- * "T" environment tree that is used to store the transformers.
- * as such, we need to track the transformers and update them with the environment.
- */
-export class Transformers {
-  private parent: Transformers | null
-  private items: Map<string, Transformer[]>
-  public constructor(parent?: Transformers) {
-    this.parent = parent || null
-    this.items = new Map<string, Transformer[]>()
-  }
-
-  // only call this if you are sure that the pattern exists.
-  public getPattern(name: string): Transformer[] {
-    // check if the pattern exists in the current transformer
-    if (this.items.has(name)) {
-      return this.items.get(name) as Transformer[]
-    }
-    // else check if the pattern exists in the parent transformer
-    if (this.parent) {
-      return this.parent.getPattern(name)
-    }
-    // should not get here. use this properly.
-    throw new Error(`Pattern ${name} not found in transformers`)
-  }
-
-  public hasPattern(name: string): boolean {
-    // check if the pattern exists in the current transformer
-    if (this.items.has(name)) {
-      return true
-    }
-    // else check if the pattern exists in the parent transformer
-    if (this.parent) {
-      return this.parent.hasPattern(name)
-    }
-    return false
-  }
-
-  public addPattern(name: string, item: Transformer[]): void {
-    this.items.set(name, item)
-  }
-}
-
-/**
  * Function to be called when a program is to be interpreted using
  * the explicit control evaluator.
  *
@@ -258,10 +202,6 @@ export function evaluate(program: es.Program, context: Context, options: IOption
     context.runtime.isRunning = true
     context.runtime.control = new Control(program)
     context.runtime.stash = new Stash()
-    // set a global transformer if it does not exist.
-    context.runtime.transformers = context.runtime.transformers
-      ? context.runtime.transformers
-      : new Transformers()
 
     return runCSEMachine(
       context,
@@ -345,7 +285,7 @@ export function CSEResultPromise(context: Context, value: Value): Promise<Result
     if (value instanceof CSEBreak) {
       resolve({ status: 'suspended-cse-eval', context })
     } else if (value instanceof CseError) {
-      resolve({ status: 'error' })
+      resolve({ context, status: 'error' })
     } else {
       resolve({ status: 'finished', context, value })
     }
@@ -440,7 +380,8 @@ export function* generateCSEMachineStateStream(
       context.runtime.nodes.shift()
       context.runtime.nodes.unshift(command)
       checkEditorBreakpoints(context, command)
-      cmdEvaluators[command.type](command, context, control, stash, isPrelude)
+
+      callEvaluator(command, context, control, stash, isPrelude)
       if (context.runtime.break && context.runtime.debuggerOn) {
         // We can put this under isNode since context.runtime.break
         // will only be updated after a debugger statement and so we will
@@ -450,10 +391,7 @@ export function* generateCSEMachineStateStream(
       }
     } else if (isInstr(command)) {
       // Command is an instruction
-      cmdEvaluators[command.instrType](command, context, control, stash, isPrelude)
-    } else {
-      // this is a scheme value
-      schemeEval(command, context, control, stash, isPrelude)
+      callEvaluator(command, context, control, stash, isPrelude)
     }
 
     // Push undefined into the stack if both control and stash is empty
@@ -471,57 +409,45 @@ export function* generateCSEMachineStateStream(
   }
 }
 
+function callEvaluator(
+  command: ControlItem,
+  context: Context,
+  control: Control,
+  stash: Stash,
+  isPrelude: boolean
+) {
+  if (isNode(command)) {
+    // @ts-expect-error Command type gets narrowed to never
+    cmdEvaluators[command.type]({ command, context, control, stash, isPrelude })
+  } else if (isInstr(command)) {
+    // @ts-expect-error Command type gets narrowed to never
+    cmdEvaluators[command.instrType]({ command, context, control, stash, isPrelude })
+  }
+}
+
+type CmdEvaluator<T extends ControlItem> = (arg: {
+  command: T
+  context: Context
+  control: Control
+  stash: Stash
+  isPrelude: boolean
+}) => void
+
+type CommandEvaluators = {
+  [K in Node['type']]?: CmdEvaluator<NodeTypeToNode<K>>
+} & {
+  [K in InstrType]?: CmdEvaluator<InstrTypeToInstr<K>>
+}
+
 /**
  * Dictionary of functions which handle the logic for the response of the three registers of
  * the CSE machine to each ControlItem.
  */
-const cmdEvaluators: { [type: string]: CmdEvaluator } = {
+const cmdEvaluators: CommandEvaluators = {
   /**
    * Statements
    */
-
-  Program: function (
-    command: es.BlockStatement,
-    context: Context,
-    control: Control,
-    stash: Stash,
-    isPrelude: boolean
-  ) {
-    // After execution of a program, the current environment might be a local one.
-    // This can cause issues (for example, during execution of consecutive REPL programs)
-    // This piece of code will reset the current environment to either a global one, a program one or a prelude one.
-    while (
-      currentEnvironment(context).name != 'global' &&
-      currentEnvironment(context).name != 'programEnvironment' &&
-      currentEnvironment(context).name != 'prelude'
-    ) {
-      popEnvironment(context)
-    }
-
-    // If the program has outer declarations:
-    // - Create the program environment (if none exists yet), and
-    // - Declare the functions and variables in the program environment.
-    if (hasDeclarations(command) || hasImportDeclarations(command)) {
-      if (currentEnvironment(context).name != 'programEnvironment') {
-        const programEnv = createProgramEnvironment(context, isPrelude)
-        pushEnvironment(context, programEnv)
-      }
-      const environment = currentEnvironment(context)
-      evaluateImports(command as unknown as es.Program, context)
-      declareFunctionsAndVariables(context, command, environment)
-    }
-
-    if (command.body.length == 1) {
-      // If program only consists of one statement, unwrap outer block
-      control.push(...handleSequence(command.body))
-    } else {
-      // Push block body as statement sequence
-      const seq: StatementSequence = ast.statementSequence(command.body, command.loc)
-      control.push(seq)
-    }
-  },
-
-  BlockStatement: function (command: es.BlockStatement, context: Context, control: Control) {
+  BlockStatement({ command, context, control }) {
     // To restore environment after block ends
     // If there is an env instruction on top of the stack, or if there are no declarations
     // we do not need to push another one
@@ -536,13 +462,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       !(isInstr(next) && next.instrType === InstrType.ENVIRONMENT) &&
       !control.canAvoidEnvInstr()
     ) {
-      control.push(
-        instr.envInstr(
-          currentEnvironment(context),
-          context.runtime.transformers as Transformers,
-          command
-        )
-      )
+      control.push(instr.envInstr(currentEnvironment(context), command))
     }
 
     const environment = createBlockEnvironment(context, 'blockEnvironment')
@@ -550,38 +470,29 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     pushEnvironment(context, environment)
 
     // Push block body as statement sequence
-    const seq: StatementSequence = ast.statementSequence(command.body, command.loc)
+    const seq = ast.statementSequence(command.body, command.loc)
     control.push(seq)
   },
 
-  StatementSequence: function (
-    command: StatementSequence,
-    context: Context,
-    control: Control,
-    stash: Stash,
-    isPrelude: boolean
-  ) {
-    if (command.body.length == 1) {
-      // If sequence only consists of one statement, evaluate it immediately
-      const next = command.body[0]
-      cmdEvaluators[next.type](next, context, control, stash, isPrelude)
-    } else {
-      // unpack and push individual nodes in body
-      control.push(...handleSequence(command.body))
-    }
-    return
+  BreakStatement({ command, control }) {
+    control.push(instr.breakInstr(command))
   },
 
-  WhileStatement: function (command: es.WhileStatement, context: Context, control: Control) {
-    if (hasBreakStatement(command.body as es.BlockStatement)) {
-      control.push(instr.breakMarkerInstr(command))
-    }
-    control.push(instr.whileInstr(command.test, command.body, command))
-    control.push(command.test)
-    control.push(ast.identifier('undefined', command.loc)) // Return undefined if there is no loop execution
+  ContinueStatement({ command, control }) {
+    control.push(instr.contInstr(command))
   },
 
-  ForStatement: function (command: es.ForStatement, context: Context, control: Control) {
+  DebuggerStatement({ context }) {
+    context.runtime.break = true
+  },
+
+  ExpressionStatement({ command, context, control, stash, isPrelude }) {
+    // Fast forward to the expression
+    // If not the next step will look like it's only removing ';'
+    callEvaluator(command.expression, context, control, stash, isPrelude)
+  },
+
+  ForStatement({ command, control }) {
     // All 3 parts will be defined due to parser rules
     const init = command.init!
     const test = command.test!
@@ -590,7 +501,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     // Loop control variable present
     // Refer to Source §3 specifications https://docs.sourceacademy.org/source_3.pdf
     if (init.type === 'VariableDeclaration' && init.kind === 'let') {
-      const id = init.declarations[0].id as es.Identifier
+      const { id } = getSourceVariableDeclaration(init)
       control.push(
         ast.blockStatement(
           [
@@ -650,54 +561,14 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  IfStatement: function (command: es.IfStatement, context: Context, control: Control) {
-    control.push(...reduceConditional(command))
-  },
-
-  ExpressionStatement: function (
-    command: es.ExpressionStatement,
-    context: Context,
-    control: Control,
-    stash: Stash,
-    isPrelude: boolean
-  ) {
-    // Fast forward to the expression
-    // If not the next step will look like it's only removing ';'
-    cmdEvaluators[command.expression.type](command.expression, context, control, stash, isPrelude)
-  },
-
-  DebuggerStatement: function (command: es.DebuggerStatement, context: Context) {
-    context.runtime.break = true
-  },
-
-  VariableDeclaration: function (
-    command: es.VariableDeclaration,
-    context: Context,
-    control: Control
-  ) {
-    const declaration: es.VariableDeclarator = command.declarations[0]
-    const id = declaration.id as es.Identifier
-
-    // Parser enforces initialisation during variable declaration
-    const init = declaration.init!
-
-    control.push(instr.popInstr(command))
-    control.push(instr.assmtInstr(id.name, command.kind === 'const', true, command))
-    control.push(init)
-  },
-
-  FunctionDeclaration: function (
-    command: es.FunctionDeclaration,
-    context: Context,
-    control: Control
-  ) {
+  FunctionDeclaration({ command, control }) {
     // Function declaration desugared into constant declaration.
-    const lambdaExpression: es.ArrowFunctionExpression = ast.blockArrowFunction(
+    const lambdaExpression = ast.blockArrowFunction(
       command.params as es.Identifier[],
       command.body,
       command.loc
     )
-    const lambdaDeclaration: es.VariableDeclaration = ast.constantDeclaration(
+    const lambdaDeclaration = ast.constantDeclaration(
       command.id!.name,
       lambdaExpression,
       command.loc
@@ -705,7 +576,48 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     control.push(lambdaDeclaration)
   },
 
-  ReturnStatement: function (command: es.ReturnStatement, context: Context, control: Control) {
+  IfStatement({ command, control }) {
+    control.push(...reduceConditional(command))
+  },
+
+  ImportDeclaration() {},
+
+  Program({ command, context, control, isPrelude }) {
+    // After execution of a program, the current environment might be a local one.
+    // This can cause issues (for example, during execution of consecutive REPL programs)
+    // This piece of code will reset the current environment to either a global one, a program one or a prelude one.
+    while (
+      currentEnvironment(context).name !== 'global' &&
+      currentEnvironment(context).name !== 'programEnvironment' &&
+      currentEnvironment(context).name !== 'prelude'
+    ) {
+      popEnvironment(context)
+    }
+
+    // If the program has outer declarations:
+    // - Create the program environment (if none exists yet), and
+    // - Declare the functions and variables in the program environment.
+    if (!hasNoDeclarations(command.body) || !hasNoImportDeclarations(command.body)) {
+      if (currentEnvironment(context).name !== 'programEnvironment') {
+        const programEnv = createProgramEnvironment(context, isPrelude)
+        pushEnvironment(context, programEnv)
+      }
+      const environment = currentEnvironment(context)
+      evaluateImports(command, context)
+      declareFunctionsAndVariables(context, command, environment)
+    }
+
+    if (command.body.length === 1) {
+      // If program only consists of one statement, unwrap outer block
+      control.push(...handleSequence(command.body))
+    } else {
+      // Push block body as statement sequence
+      const seq = ast.statementSequence(command.body as es.Statement[], command.loc)
+      control.push(seq)
+    }
+  },
+
+  ReturnStatement({ command, control }) {
     // Push return argument onto control as well as Reset Instruction to clear to ignore all statements after the return.
     const next = control.peek()
     if (next && isInstr(next) && next.instrType === InstrType.MARKER) {
@@ -718,48 +630,38 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  ContinueStatement: function (command: es.ContinueStatement, context: Context, control: Control) {
-    control.push(instr.contInstr(command))
+  StatementSequence({ command, context, control, stash, isPrelude }) {
+    if (command.body.length == 1) {
+      // If sequence only consists of one statement, evaluate it immediately
+      const next = command.body[0]
+      callEvaluator(next, context, control, stash, isPrelude)
+    } else {
+      // unpack and push individual nodes in body
+      control.push(...handleSequence(command.body))
+    }
+    return
   },
 
-  BreakStatement: function (command: es.BreakStatement, context: Context, control: Control) {
-    control.push(instr.breakInstr(command))
+  VariableDeclaration({ command, control }) {
+    const { init, id } = getSourceVariableDeclaration(command)
+    control.push(instr.popInstr(command))
+    control.push(instr.assmtInstr(id.name, command))
+    control.push(init)
   },
 
-  ImportDeclaration: function () {},
+  WhileStatement({ command, control }) {
+    if (hasBreakStatement(command.body as es.BlockStatement)) {
+      control.push(instr.breakMarkerInstr(command))
+    }
+    control.push(instr.whileInstr(command.test, command.body, command))
+    control.push(command.test)
+    control.push(ast.identifier('undefined', command.loc)) // Return undefined if there is no loop execution
+  },
 
   /**
    * Expressions
    */
-
-  Literal: function (command: es.Literal, context: Context, control: Control, stash: Stash) {
-    stash.push(command.value)
-  },
-
-  AssignmentExpression: function (
-    command: es.AssignmentExpression,
-    context: Context,
-    control: Control
-  ) {
-    if (command.left.type === 'MemberExpression') {
-      control.push(instr.arrAssmtInstr(command))
-      control.push(command.right)
-      control.push(command.left.property)
-      control.push(command.left.object)
-    } else if (command.left.type === 'Identifier') {
-      const id = command.left
-      control.push(instr.assmtInstr(id.name, false, false, command))
-      control.push(command.right)
-    }
-  },
-
-  SpreadElement: function (command: es.SpreadElement, context: Context, control: Control) {
-    const arr = command.argument as es.ArrayExpression
-    control.push(instr.spreadInstr(arr))
-    control.push(arr)
-  },
-
-  ArrayExpression: function (command: es.ArrayExpression, context: Context, control: Control) {
+  ArrayExpression({ command, control }) {
     const elems = command.elements as ContiguousArrayElements
     const len = elems.length
 
@@ -769,7 +671,18 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  ObjectExpression: function (command: es.ObjectExpression, context: Context, control: Control) {
+  ArrowFunctionExpression({ command, context, stash, isPrelude }) {
+    const closure = Closure.makeFromArrowFunction(
+      command,
+      currentEnvironment(context),
+      context,
+      true,
+      isPrelude
+    )
+    stash.push(closure)
+  },
+
+  ObjectExpression({ command, control }) {
     const properties = command.properties as es.Property[]
     const keys: string[] = []
 
@@ -782,42 +695,58 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
 
     control.push(instr.objLitInstr(keys, command))
-    // Push property values in reverse order
     for (let i = properties.length - 1; i >= 0; i--) {
       control.push(properties[i].value)
     }
   },
 
-  MemberExpression: function (command: es.MemberExpression, context: Context, control: Control) {
+  MemberExpression({ command, control }) {
     control.push(instr.arrAccInstr(command))
     control.push(command.property)
     control.push(command.object)
   },
 
-  ConditionalExpression: function (
-    command: es.ConditionalExpression,
-    context: Context,
-    control: Control
-  ) {
-    control.push(...reduceConditional(command))
+  AssignmentExpression({ command, control }) {
+    if (command.left.type === 'MemberExpression') {
+      control.push(instr.arrAssmtInstr(command))
+      control.push(command.right)
+      control.push(command.left.property)
+      control.push(command.left.object)
+    } else if (command.left.type === 'Identifier') {
+      const id = command.left
+      control.push(instr.assmtInstr(id.name, command))
+      control.push(command.right)
+    }
   },
 
-  Identifier: function (command: es.Identifier, context: Context, control: Control, stash: Stash) {
-    stash.push(getVariable(context, command.name, command))
-  },
-
-  UnaryExpression: function (command: es.UnaryExpression, context: Context, control: Control) {
-    control.push(instr.unOpInstr(command.operator, command))
-    control.push(command.argument)
-  },
-
-  BinaryExpression: function (command: es.BinaryExpression, context: Context, control: Control) {
+  BinaryExpression({ command, control }) {
     control.push(instr.binOpInstr(command.operator, command))
     control.push(command.right)
     control.push(command.left)
   },
 
-  LogicalExpression: function (command: es.LogicalExpression, context: Context, control: Control) {
+  CallExpression({ command, control }) {
+    // Push application instruction, function arguments and function onto control.
+    control.push(instr.appInstr(command.arguments.length, command))
+    for (let index = command.arguments.length - 1; index >= 0; index--) {
+      control.push(command.arguments[index])
+    }
+    control.push(command.callee)
+  },
+
+  ConditionalExpression({ command, control }) {
+    control.push(...reduceConditional(command))
+  },
+
+  Identifier({ command, context, stash }) {
+    stash.push(getVariable(context, command.name, command))
+  },
+
+  Literal({ command, stash }) {
+    stash.push(command.value)
+  },
+
+  LogicalExpression({ command, control }) {
     if (command.operator === '&&') {
       control.push(
         ast.conditionalExpression(command.left, command.right, ast.literal(false), command.loc)
@@ -829,169 +758,21 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  ArrowFunctionExpression: function (
-    command: es.ArrowFunctionExpression,
-    context: Context,
-    control: Control,
-    stash: Stash,
-    isPrelude: boolean
-  ) {
-    const closure: Closure = Closure.makeFromArrowFunction(
-      command,
-      currentEnvironment(context),
-      currentTransformers(context),
-      context,
-      true,
-      isPrelude
-    )
-    stash.push(closure)
+  SpreadElement({ command, control }) {
+    const arr = command.argument as es.ArrayExpression
+    control.push(instr.spreadInstr(arr))
+    control.push(arr)
   },
 
-  CallExpression: function (command: es.CallExpression, context: Context, control: Control) {
-    // Push application instruction, function arguments and function onto control.
-    control.push(instr.appInstr(command.arguments.length, command))
-    for (let index = command.arguments.length - 1; index >= 0; index--) {
-      control.push(command.arguments[index])
-    }
-    control.push(command.callee)
+  UnaryExpression({ command, control }) {
+    control.push(instr.unOpInstr(command.operator, command))
+    control.push(command.argument)
   },
 
   /**
    * Instructions
    */
-
-  [InstrType.RESET]: function (command: Instr, context: Context, control: Control) {
-    // Keep pushing reset instructions until marker is found.
-    const cmdNext: ControlItem | undefined = control.pop()
-    if (cmdNext && (!isInstr(cmdNext) || cmdNext.instrType !== InstrType.MARKER)) {
-      control.push(instr.resetInstr(command.srcNode))
-    }
-  },
-
-  [InstrType.WHILE]: function (
-    command: WhileInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
-    const test = stash.pop()
-
-    // Check if test condition is a boolean
-    const error = rttc.checkIfStatement(command.srcNode, test, context.chapter)
-    if (error) {
-      handleRuntimeError(context, error)
-    }
-
-    if (test) {
-      control.push(command)
-      control.push(command.test)
-      if (hasContinueStatement(command.body as es.BlockStatement)) {
-        control.push(instr.contMarkerInstr(command.srcNode))
-      }
-      if (!valueProducing(command.body)) {
-        // if loop body is not value-producing, insert undefined expression statement
-        control.push(ast.identifier('undefined', command.body.loc))
-      }
-      control.push(command.body)
-      control.push(instr.popInstr(command.srcNode)) // Pop previous body value
-    }
-  },
-
-  [InstrType.FOR]: function (command: ForInstr, context: Context, control: Control, stash: Stash) {
-    const test = stash.pop()
-
-    // Check if test condition is a boolean
-    const error = rttc.checkIfStatement(command.srcNode, test, context.chapter)
-    if (error) {
-      handleRuntimeError(context, error)
-    }
-
-    if (test) {
-      control.push(command)
-      control.push(command.test)
-      control.push(instr.popInstr(command.srcNode)) // Pop value from update
-      control.push(command.update)
-      if (hasContinueStatement(command.body as es.BlockStatement)) {
-        control.push(instr.contMarkerInstr(command.srcNode))
-      }
-      if (!valueProducing(command.body)) {
-        // if loop body is not value-producing, insert undefined expression statement
-        control.push(ast.identifier('undefined', command.body.loc))
-      }
-      control.push(command.body)
-      control.push(instr.popInstr(command.srcNode)) // Pop previous body value
-    }
-  },
-
-  [InstrType.ASSIGNMENT]: function (
-    command: AssmtInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
-    if (command.declaration) {
-      defineVariable(
-        context,
-        command.symbol,
-        stash.peek(),
-        command.constant,
-        command.srcNode as es.VariableDeclaration
-      )
-    } else {
-      setVariable(context, command.symbol, stash.peek(), command.srcNode as es.AssignmentExpression)
-    }
-  },
-
-  [InstrType.UNARY_OP]: function (
-    command: UnOpInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
-    const argument = stash.pop()
-    const error = rttc.checkUnaryExpression(
-      command.srcNode,
-      command.symbol as es.UnaryOperator,
-      argument,
-      context.chapter
-    )
-    if (error) {
-      handleRuntimeError(context, error)
-    }
-    stash.push(evaluateUnaryExpression(command.symbol as es.UnaryOperator, argument))
-  },
-
-  [InstrType.BINARY_OP]: function (
-    command: BinOpInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
-    const right = stash.pop()
-    const left = stash.pop()
-    const error = rttc.checkBinaryExpression(
-      command.srcNode,
-      command.symbol as es.BinaryOperator,
-      context.chapter,
-      left,
-      right
-    )
-    if (error) {
-      handleRuntimeError(context, error)
-    }
-    stash.push(evaluateBinaryExpression(command.symbol as es.BinaryOperator, left, right))
-  },
-
-  [InstrType.POP]: function (command: Instr, context: Context, control: Control, stash: Stash) {
-    stash.pop()
-  },
-
-  [InstrType.APPLICATION]: function (
-    command: AppInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
+  [InstrType.APPLICATION]({ command, context, control, stash }) {
     checkStackOverFlow(context, control)
     // Get function arguments from the stash
     const args: Value[] = []
@@ -1006,49 +787,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       handleRuntimeError(context, new errors.CallingNonFunctionValue(func, command.srcNode))
     }
 
-    if (isApply(func)) {
-      // Check for number of arguments mismatch error
-      checkNumberOfArguments(context, func, args, command.srcNode)
-
-      // get the procedure from the arguments
-      const proc = args[0]
-      // get the last list from the arguments
-      // (and it should be a list)
-      const last = args[args.length - 1]
-      if (!isList(last)) {
-        handleRuntimeError(
-          context,
-          new errors.ExceptionError(new Error('Last argument of apply must be a list'))
-        )
-      }
-      // get the rest of the arguments between the procedure and the last list
-      const rest = args.slice(1, args.length - 1)
-      // convert the last list to an array
-      const lastAsArray = flattenList(last)
-      // combine the rest and the last list
-      const combined = [...rest, ...lastAsArray]
-
-      // push the items back onto the stash
-      stash.push(proc)
-      stash.push(...combined)
-
-      // prepare a function call for the procedure
-      control.push(instr.appInstr(combined.length, command.srcNode))
-      return
-    }
-
-    if (isEval(func)) {
-      // Check for number of arguments mismatch error
-      checkNumberOfArguments(context, func, args, command.srcNode)
-
-      // get the AST from the arguments
-      const AST = args[0]
-
-      // move it to the control
-      control.push(AST)
-      return
-    }
-
     if (isCallWithCurrentContinuation(func)) {
       // Check for number of arguments mismatch error
       checkNumberOfArguments(context, func, args, command.srcNode)
@@ -1057,7 +795,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       const contControl = control.copy()
       const contStash = stash.copy()
       const contEnv = context.runtime.environments.slice()
-      const contTransformers = currentTransformers(context)
 
       // at this point, the extra CALL instruction
       // has been removed from the control stack.
@@ -1065,16 +802,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       // removed (as the parameter of call/cc) from the stash
       // and additionally, call/cc itself has been removed from the stash.
 
-      // as such, there is no further need to modify the
-      // copied C, S, E and T!
-
-      const continuation = new Continuation(
-        context,
-        contControl,
-        contStash,
-        contEnv,
-        contTransformers
-      )
+      const continuation = new Continuation(context, contControl, contStash, contEnv)
 
       // Get the callee
       const cont_callee: Value = args[0]
@@ -1172,8 +900,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
           context,
           capturedControl,
           capturedStash,
-          capturedEnvStack,
-          currentTransformers(context)
+          capturedEnvStack
         )
 
         // Remove captured items from control (everything from marker onwards)
@@ -1209,8 +936,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
           context,
           fullControl,
           fullStash,
-          capturedEnvStack,
-          currentTransformers(context)
+          capturedEnvStack
         )
 
         // Clear control and stash
@@ -1338,7 +1064,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         capturedControl,
         capturedStash,
         capturedEnvStack,
-        currentTransformers(context),
         handlerMarker.handler,
         handlerMarker.id
       )
@@ -1400,7 +1125,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       // Push environment stack restoration instruction to restore entire env stack after continuation finishes
       // Using the new ENV_STACK_RESTORE instruction since we replace the whole stack, not just pop to an environment
       // IMPORTANT: Copy the stack now, as it will be modified by the captured continuation
-      newControl.push(instr.envStackRestoreInstr(copyEnvironmentStack(context.runtime.environments), currentTransformers(context), command.srcNode))
+      newControl.push(instr.envStackRestoreInstr(copyEnvironmentStack(context.runtime.environments), command.srcNode))
 
       // Push captured control items
       for (const item of contControl) {
@@ -1446,13 +1171,11 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       const contControl = func.getControl()
       const contStash = func.getStash()
       const contEnv = func.getEnv()
-      const contTransformers = func.getTransformers()
 
       // update the C, S, E of the current context
       control.setTo(contControl)
       stash.setTo(contStash)
       context.runtime.environments = contEnv
-      setTransformers(context, contTransformers)
 
       // push the arguments back onto the stash
       stash.push(...args)
@@ -1472,14 +1195,11 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       // as schemers like using the REPL, and that always assumes that the environment is reset
       // to the main environment.
       if (
-        (next &&
-          !(isInstr(next) && next.instrType === InstrType.ENVIRONMENT) &&
-          !control.canAvoidEnvInstr()) ||
-        isSchemeLanguage(context)
+        next &&
+        !(isInstr(next) && next.instrType === InstrType.ENVIRONMENT) &&
+        !control.canAvoidEnvInstr()
       ) {
-        control.push(
-          instr.envInstr(currentEnvironment(context), currentTransformers(context), command.srcNode)
-        )
+        control.push(instr.envInstr(currentEnvironment(context), command.srcNode))
       }
 
       // Create environment for function parameters if the function isn't nullary.
@@ -1505,9 +1225,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         control.push(func.node.body)
       }
 
-      // we need to update the transformers environment here.
-      const newTransformers = new Transformers(func.transformers)
-      setTransformers(context, newTransformers)
       return
     }
 
@@ -1557,94 +1274,20 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     return
   },
 
-  [InstrType.BRANCH]: function (
-    command: BranchInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
-    const test = stash.pop()
-
-    // Check if test condition is a boolean
-    const error = rttc.checkIfStatement(command.srcNode, test, context.chapter)
-    if (error) {
-      handleRuntimeError(context, error)
-    }
-
-    if (test) {
-      if (!valueProducing(command.consequent)) {
-        control.push(ast.identifier('undefined', command.consequent.loc))
-      }
-      control.push(command.consequent)
-    } else if (command.alternate) {
-      if (!valueProducing(command.alternate)) {
-        control.push(ast.identifier('undefined', command.consequent.loc))
-      }
-      control.push(command.alternate)
-    } else {
-      control.push(ast.identifier('undefined', command.srcNode.loc))
-    }
-  },
-
-  [InstrType.ENVIRONMENT]: function (command: EnvInstr, context: Context) {
-    // Restore environment
-    if (!command.env || !currentEnvironment(context)) {
-      return
-    }
-    while (currentEnvironment(context) && currentEnvironment(context).id !== command.env.id) {
-      popEnvironment(context)
-      if (!currentEnvironment(context)) {
-        return
-      }
-    }
-    // restore transformers environment
-    setTransformers(context, command.transformers)
-  },
-
-  [InstrType.ENV_STACK_RESTORE]: function (command: EnvStackRestoreInstr, context: Context) {
-    // Restore the entire environment stack (used after delimited continuation application)
-    // The envStack was already copied when the instruction was created
+  [InstrType.ENV_STACK_RESTORE]({ command, context }: { command: EnvStackRestoreInstr, context: Context }) {
     context.runtime.environments = command.envStack
-    // restore transformers environment
-    setTransformers(context, command.transformers)
   },
 
-  [InstrType.ARRAY_LITERAL]: function (
-    command: ArrLitInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
-    const arity = command.arity
-    const array = []
-    for (let i = 0; i < arity; ++i) {
-      array.unshift(stash.pop())
-    }
-    handleArrayCreation(context, array)
-    stash.push(array)
-  },
-
-  [InstrType.OBJECT_LITERAL]: function (
-    command: ObjLitInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
+  [InstrType.OBJECT_LITERAL]({ command, stash }) {
     const keys = command.keys
     const obj: Record<string, any> = {}
-    // Pop values in reverse order (they were pushed in reverse)
     for (let i = keys.length - 1; i >= 0; i--) {
       obj[keys[i]] = stash.pop()
     }
     stash.push(obj)
   },
 
-  [InstrType.ARRAY_ACCESS]: function (
-    command: Instr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
+  [InstrType.ARRAY_ACCESS]({ command, context, stash }) {
     const index = stash.pop()
     const array = stash.pop()
 
@@ -1668,12 +1311,17 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  [InstrType.ARRAY_ASSIGNMENT]: function (
-    command: Instr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
+  [InstrType.ARRAY_LITERAL]({ command, context, stash }) {
+    const arity = command.arity
+    const array = []
+    for (let i = 0; i < arity; ++i) {
+      array.unshift(stash.pop())
+    }
+    handleArrayCreation(context, array)
+    stash.push(array)
+  },
+
+  [InstrType.ARRAY_ASSIGNMENT]({ stash }) {
     const value = stash.pop()
     const index = stash.pop()
     const array = stash.pop()
@@ -1681,22 +1329,55 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     stash.push(value)
   },
 
-  [InstrType.CONTINUE]: function (command: Instr, context: Context, control: Control) {
-    const next = control.pop() as ControlItem
-    if (isInstr(next) && next.instrType == InstrType.CONTINUE_MARKER) {
-      // Encountered continue mark, stop popping
-    } else if (isInstr(next) && next.instrType == InstrType.ENVIRONMENT) {
-      control.push(command)
-      control.push(next) // Let instruction evaluate to restore env
+  [InstrType.ASSIGNMENT]({ command, context, stash }) {
+    if (command.declaration) {
+      defineVariable(context, command.symbol, stash.peek(), command.constant, command.srcNode)
     } else {
-      // Continue popping from control by pushing same instruction on control
-      control.push(command)
+      setVariable(context, command.symbol, stash.peek(), command.srcNode)
     }
   },
 
-  [InstrType.CONTINUE_MARKER]: function () {},
+  [InstrType.BINARY_OP]({ command, context, stash }) {
+    const right = stash.pop()
+    const left = stash.pop()
+    const error = rttc.checkBinaryExpression(
+      command.srcNode,
+      command.symbol,
+      context.chapter,
+      left,
+      right
+    )
+    if (error) {
+      handleRuntimeError(context, error)
+    }
+    stash.push(evaluateBinaryExpression(command.symbol, left, right))
+  },
 
-  [InstrType.BREAK]: function (command: Instr, context: Context, control: Control) {
+  [InstrType.BRANCH]({ command, context, control, stash }) {
+    const test = stash.pop()
+
+    // Check if test condition is a boolean
+    const error = rttc.checkIfStatement(command.srcNode, test, context.chapter)
+    if (error) {
+      handleRuntimeError(context, error)
+    }
+
+    if (test) {
+      if (!valueProducing(command.consequent)) {
+        control.push(ast.identifier('undefined', command.consequent.loc))
+      }
+      control.push(command.consequent)
+    } else if (command.alternate) {
+      if (!valueProducing(command.alternate)) {
+        control.push(ast.identifier('undefined', command.consequent.loc))
+      }
+      control.push(command.alternate)
+    } else {
+      control.push(ast.identifier('undefined', command.srcNode.loc))
+    }
+  },
+
+  [InstrType.BREAK]({ command, control }) {
     const next = control.pop() as ControlItem
     if (isInstr(next) && next.instrType == InstrType.BREAK_MARKER) {
       // Encountered break mark, stop popping
@@ -1709,14 +1390,69 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  [InstrType.BREAK_MARKER]: function () {},
+  [InstrType.BREAK_MARKER]() {},
 
-  [InstrType.SPREAD]: function (
-    command: SpreadInstr,
-    context: Context,
-    control: Control,
-    stash: Stash
-  ) {
+  [InstrType.CONTINUE]({ command, control }) {
+    const next = control.pop() as ControlItem
+    if (isInstr(next) && next.instrType == InstrType.CONTINUE_MARKER) {
+      // Encountered continue mark, stop popping
+    } else if (isInstr(next) && next.instrType == InstrType.ENVIRONMENT) {
+      control.push(command)
+      control.push(next) // Let instruction evaluate to restore env
+    } else {
+      // Continue popping from control by pushing same instruction on control
+      control.push(command)
+    }
+  },
+
+  [InstrType.CONTINUE_MARKER]() {},
+
+  [InstrType.ENVIRONMENT]({ command, context }) {
+    // Restore environment
+    while (currentEnvironment(context).id !== command.env.id) {
+      popEnvironment(context)
+    }
+  },
+
+  [InstrType.FOR]({ command, context, control, stash }) {
+    const test = stash.pop()
+
+    // Check if test condition is a boolean
+    const error = rttc.checkIfStatement(command.srcNode, test, context.chapter)
+    if (error) {
+      handleRuntimeError(context, error)
+    }
+
+    if (test) {
+      control.push(command)
+      control.push(command.test)
+      control.push(instr.popInstr(command.srcNode)) // Pop value from update
+      control.push(command.update)
+      if (hasContinueStatement(command.body as es.BlockStatement)) {
+        control.push(instr.contMarkerInstr(command.srcNode))
+      }
+      if (!valueProducing(command.body)) {
+        // if loop body is not value-producing, insert undefined expression statement
+        control.push(ast.identifier('undefined', command.body.loc))
+      }
+      control.push(command.body)
+      control.push(instr.popInstr(command.srcNode)) // Pop previous body value
+    }
+  },
+
+  [InstrType.POP]({ stash }) {
+    stash.pop()
+  },
+
+  [InstrType.RESET]({ command, control }) {
+    // Keep pushing reset instructions until marker is found.
+    const cmdNext: ControlItem | undefined = control.pop()
+    if (cmdNext && (!isInstr(cmdNext) || cmdNext.instrType !== InstrType.MARKER)) {
+      control.push(instr.resetInstr(command.srcNode))
+    }
+  },
+
+  [InstrType.SPREAD]({ command, context, control, stash }) {
     const array = stash.pop()
 
     // Check if right-hand side is array
@@ -1742,24 +1478,9 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     }
   },
 
-  // Delimited continuation marker rule:
-  // (reset_control_marker:C, v:reset_stash_marker:S, E) ↪ (C, v:S, E)
-  // When the control marker is reached, the stash should have a value above the stash marker.
-  // We remove both markers and keep the value.
-  [InstrType.RESET_CONTROL_MARKER]: function (
-    _command: Instr,
-    _context: Context,
-    _control: Control,
-    stash: Stash
-  ) {
-    // Get the stash stack
+  // Delimited continuation marker rule
+  [InstrType.RESET_CONTROL_MARKER]({ stash }) {
     const stashStack = stash.getStack()
-
-    // The top of the stash should be the result value
-    // Below it should be the reset stash marker
-    // Find the topmost reset stash marker and remove it along with keeping the value above it
-
-    // Find the reset stash marker
     let markerIndex = -1
     for (let i = stashStack.length - 1; i >= 0; i--) {
       if (stashStack[i] instanceof ResetStashMarker) {
@@ -1767,40 +1488,22 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         break
       }
     }
-
     if (markerIndex >= 0) {
-      // Get the value(s) above the marker
       const valuesAboveMarker = stashStack.slice(markerIndex + 1)
-
-      // Create new stash without the marker but with the values
       const newStash = new Stash()
       for (let i = 0; i < markerIndex; i++) {
         newStash.push(stashStack[i])
       }
-      // Push the values that were above the marker
       for (const v of valuesAboveMarker) {
         newStash.push(v)
       }
-
       stash.setTo(newStash)
     }
-    // If no marker found, just continue (shouldn't happen in well-formed programs)
   },
 
-  // Handler control marker rule:
-  // (handler_control_marker(handler, id):C, v:handler_stash_marker(id):S, E) ↪ (C, v:S, E)
-  // When the handler control marker is reached, the handler block has completed.
-  // We remove both markers and keep the value.
-  [InstrType.HANDLER_CONTROL_MARKER]: function (
-    command: HandlerControlMarkerInstr,
-    context: Context,
-    _control: Control,
-    stash: Stash
-  ) {
-    // Get the stash stack
+  // Handler control marker rule
+  [InstrType.HANDLER_CONTROL_MARKER]({ command, stash }: { command: HandlerControlMarkerInstr, stash: Stash }) {
     const stashStack = stash.getStack()
-
-    // Find the handler stash marker with the matching id
     let markerIndex = -1
     for (let i = stashStack.length - 1; i >= 0; i--) {
       if (stashStack[i] instanceof HandlerStashMarker && stashStack[i].id === command.id) {
@@ -1808,27 +1511,52 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         break
       }
     }
-
     if (markerIndex >= 0) {
-      // Get the value(s) above the marker
       const valuesAboveMarker = stashStack.slice(markerIndex + 1)
-
-      // Create new stash without the marker but with the values
       const newStash = new Stash()
       for (let i = 0; i < markerIndex; i++) {
         newStash.push(stashStack[i])
       }
-      // Push the values that were above the marker
       for (const v of valuesAboveMarker) {
         newStash.push(v)
       }
-
       stash.setTo(newStash)
-    } else {
-      // Stash marker not found - this can happen with deep handlers after continuation application
-      // The marker may have been captured in a continuation and is no longer present
-      // In this case, just leave the stash as is - the value should propagate correctly
-      // This is a no-op for cleanup
+    }
+  },
+
+  [InstrType.UNARY_OP]({ command, context, stash }) {
+    const argument = stash.pop()
+    const error = rttc.checkUnaryExpression(
+      command.srcNode,
+      command.symbol,
+      argument,
+      context.chapter
+    )
+    if (error) {
+      handleRuntimeError(context, error)
+    }
+    stash.push(evaluateUnaryExpression(command.symbol, argument))
+  },
+
+  [InstrType.WHILE]({ command, context, control, stash }) {
+    const test = stash.pop()
+
+    const error = rttc.checkIfStatement(command.srcNode, test, context.chapter)
+    if (error) {
+      handleRuntimeError(context, error)
+    }
+
+    if (test) {
+      control.push(command)
+      control.push(command.test)
+      if (hasContinueStatement(command.body as es.BlockStatement)) {
+        control.push(instr.contMarkerInstr(command.srcNode))
+      }
+      if (!valueProducing(command.body)) {
+        control.push(ast.identifier('undefined', command.body.loc))
+      }
+      control.push(command.body)
+      control.push(instr.popInstr(command.srcNode))
     }
   }
 }

@@ -1,17 +1,17 @@
-import * as _ from 'lodash'
 import type { Program } from 'estree'
+import * as _ from 'lodash'
 import type { Context, IOptions, Result } from '..'
-import { mapResult } from '../alt-langs/mapper'
+import { Chapter, Variant } from '../langs'
 import type { FileGetter } from '../modules/moduleTypes'
 import preprocessFileImports from '../modules/preprocessor'
-import { Chapter, Variant, type RecursivePartial } from '../types'
-import { validateAndAnnotate } from '../validator/validator'
-import { parse } from '../parser/parser'
-import assert from '../utils/assert'
 import { defaultAnalysisOptions } from '../modules/preprocessor/analyzer'
 import { defaultLinkerOptions } from '../modules/preprocessor/linker'
-import { determineExecutionMethod, determineVariant, resolvedErrorPromise } from './utils'
+import { parse } from '../parser/parser'
+import type { RecursivePartial } from '../types'
+import assert from '../utils/assert'
+import { validateAndAnnotate } from '../validator/validator'
 import runners from './sourceRunner'
+import { determineExecutionMethod, determineVariant } from './utils'
 
 let previousCode: {
   files: Partial<Record<string, string>>
@@ -57,7 +57,10 @@ async function sourceRunner(
 
   validateAndAnnotate(program, context)
   if (context.errors.length > 0) {
-    return resolvedErrorPromise
+    return {
+      status: 'error',
+      context
+    }
   }
 
   if (theOptions.useSubst) {
@@ -76,7 +79,7 @@ async function sourceRunner(
     context.unTypecheckedCode.push(context.prelude)
 
     const prelude = parse(context.prelude, context)
-    if (prelude === null) return resolvedErrorPromise
+    if (prelude === null) return { status: 'error', context }
 
     await sourceRunner(prelude, context, isVerboseErrorsEnabled, { ...options, isPrelude: true })
   }
@@ -121,7 +124,7 @@ export async function sourceFilesRunner(
 
   if (!preprocessResult.ok) {
     return {
-      result: { status: 'error' },
+      result: { status: 'error', context },
       verboseErrors: preprocessResult.verboseErrors
     }
   }
@@ -146,10 +149,9 @@ export async function sourceFilesRunner(
   context.previousPrograms.unshift(preprocessedProgram)
 
   const result = await sourceRunner(preprocessedProgram, context, verboseErrors, options)
-  const resultMapper = mapResult(context)
 
   return {
-    result: resultMapper(result),
+    result,
     verboseErrors
   }
 }
@@ -180,4 +182,3 @@ export function runCodeInSource(
 }
 
 export { htmlRunner } from './htmlRunner'
-export { resolvedErrorPromise }
