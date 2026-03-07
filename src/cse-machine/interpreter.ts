@@ -1089,7 +1089,12 @@ const cmdEvaluators: CommandEvaluators = {
 
       // Apply handler function: handler takes (k, ...args) where k is the continuation
       // Push application instruction for (1 + number of op args) arguments
-      control.push(instr.appInstr(1 + opArgs.length, command.srcNode))
+      // Use the operation name as the callee so the frame is named after the operation
+      const handlerCallExpr = {
+        ...command.srcNode,
+        callee: { type: 'Identifier', name: opName } as es.Identifier
+      }
+      control.push(instr.appInstr(1 + opArgs.length, handlerCallExpr))
 
       // Push handler function and arguments onto stash
       stash.push(handlerFn)
