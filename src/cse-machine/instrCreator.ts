@@ -177,7 +177,7 @@ export const resetControlMarkerInstr = (srcNode: Node): ResetControlMarkerInstr 
 // Effect handler instruction creators
 export const handlerControlMarkerInstr = (
   handler: Handler,
-  id: number,
+  id: string,
   srcNode: Node
 ): HandlerControlMarkerInstr => ({
   instrType: InstrType.HANDLER_CONTROL_MARKER,

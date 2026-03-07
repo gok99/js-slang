@@ -177,7 +177,7 @@ export class DelimitedContinuation extends Function {
 
   /** Optional handler for effect handler continuations */
   public readonly handler?: Handler
-  public readonly handlerId?: number
+  public readonly handlerId?: string
 
   constructor(
     context: Context,
@@ -185,7 +185,7 @@ export class DelimitedContinuation extends Function {
     stash: Value[],
     envStack: Environment[],
     handler?: Handler,
-    handlerId?: number
+    handlerId?: string
   ) {
     super()
     this.control = [...control]

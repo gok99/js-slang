@@ -88,6 +88,7 @@ import {
   pushEnvironment,
   reduceConditional,
   setVariable,
+  uniqueId,
   valueProducing
 } from './utils'
 
@@ -962,7 +963,7 @@ const cmdEvaluators: CommandEvaluators = {
       const body = args[1]
 
       // Generate unique id for this handler frame
-      const handlerId = Date.now() + Math.random()
+      const handlerId = uniqueId(context)
 
       // Convert handler object to Map
       const handlerMap: Handler = new Map()

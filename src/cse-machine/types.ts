@@ -112,7 +112,7 @@ export interface EnvStackRestoreInstr extends BaseInstr {
 export interface HandlerControlMarkerInstr extends BaseInstr {
   instrType: InstrType.HANDLER_CONTROL_MARKER
   handler: Handler
-  id: number
+  id: string
 }
 
 export interface RunWithHandlerInstr extends BaseInstr {
@@ -137,7 +137,7 @@ export class ResetStashMarker {
 }
 
 export class HandlerStashMarker {
-  constructor(public readonly id: number) {}
+  constructor(public readonly id: string) {}
   public toString(): string {
     return `handler_stash_marker(${this.id})`
   }
